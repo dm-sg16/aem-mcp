@@ -41,18 +41,24 @@ These are mandatory and define the project’s value proposition (safe-by-defaul
 1. **Result/depth caps.** QueryBuilder hit counts and node-inspection depth are clamped to
    server-side maximums to protect context size and author-instance load.
 1. **Secrets only from environment / secrets manager.** `AEM_USERNAME`, `AEM_PASSWORD`,
-   `AEM_BASE_URL` come from env. `.mcp.json` holds only the server URL. Nothing secret is committed
-   or baked into the image.
+   `AEM_BASE_URL`, and `AEM_MCP_TOKEN` come from env. `.mcp.json` holds only the server URL and
+   env-var *references* (e.g. `${AEM_MCP_TOKEN}`) — never literal secrets. Nothing secret is
+   committed or baked into the image.
 1. **Audit trail.** Every tool call is logged (tool, caller, params) to a dedicated logger for SIEM
    shipment. Note the identity caveat in Task 7 — a shared service account cannot, by itself,
    attribute calls to an individual developer.
 1. **Read-only container.** Runs as non-root; production filesystem is read-only.
+1. **Transport authentication on `/sse`.** A shared bearer token (`AEM_MCP_TOKEN`) is required
+   on every MCP request in Phase 1; the server refuses to start if the token is unset. Only the
+   k8s probe endpoints under `/actuator/health/*` are exempt. Per-developer identity (OIDC or
+   mTLS) is the Phase 2 successor — see §4 "Future hardening".
 
 ## 4. Architecture
 
 ```
 Claude Code (developer)
         │  MCP over HTTP (SSE; default endpoint /sse)
+        │  Authorization: Bearer ${AEM_MCP_TOKEN}      (shared secret, Phase 1)
         ▼
 AEM Read-Only MCP Server  (this project, centrally hosted)
         │  HTTPS + Basic Auth (read-only service account)
@@ -66,6 +72,21 @@ AEM on-prem AUTHOR instance
 Data flow to be aware of for compliance: content returned by AEM travels through this server into
 the MCP client’s model context. Confirm your organization permits internal content to reach the
 chosen LLM before production rollout.
+
+### Future hardening (Phase 2 — out of scope for this build)
+
+The Phase 1 design is deliberately read-only and uses a shared bearer token. The following items
+are explicitly **not** in scope today; record them so the next iteration does not have to
+re-discover them:
+
+1. Replace the shared-secret bearer with OIDC or mTLS so the server can attribute each call to
+   the individual developer rather than the service account.
+1. Propagate that authenticated principal into `AuditLogger.record(...)` (the `caller` parameter)
+   so the audit trail is per-developer rather than per-service-account.
+1. If write tools are ever added, introduce a separate `aem.writable-path-prefixes` allow-list
+   (defaulting empty) and a distinct `@WriteTool` marker so the read-only and write surfaces
+   cannot be confused at runtime.
+1. Add per-caller rate limits / quotas once real usage patterns are known.
 
 ## 5. Tech Stack & Versions
 
@@ -109,6 +130,7 @@ aem-readonly-mcp/
     │   │   └── AuditLogger.java
     │   └── config/
     │       ├── AemClientConfig.java
+    │       ├── BearerTokenFilter.java
     │       └── ToolsConfig.java
     └── resources/
         └── application.yml
@@ -142,6 +164,10 @@ aem-readonly-mcp/
 
     <properties>
         <java.version>17</java.version>
+        <!-- Spring Boot and Spring AI must be bumped together: the Spring AI BOM tracks Boot
+             minor versions, and mismatches surface as runtime ClassNotFoundExceptions in the
+             MCP starter. Confirm the pair before changing either. -->
+        <spring-boot.version>3.4.2</spring-boot.version>
         <spring-ai.version>1.0.0</spring-ai.version>
     </properties>
 
@@ -170,6 +196,10 @@ aem-readonly-mcp/
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -216,6 +246,7 @@ Typed configuration + guardrails bound from `aem.*`. Credentials come from the e
 ```java
 package com.example.aem.mcp.aem;
 
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -274,6 +305,22 @@ public class AemProperties {
 
     public boolean isBundleHealthEnabled() { return bundleHealthEnabled; }
     public void setBundleHealthEnabled(boolean bundleHealthEnabled) { this.bundleHealthEnabled = bundleHealthEnabled; }
+
+    @AssertTrue(message = "aem.default-limit must be <= aem.max-limit, and every aem.allowed-path-prefixes entry must start with '/'")
+    public boolean isConsistent() {
+        if (defaultLimit > maxLimit) {
+            return false;
+        }
+        if (allowedPathPrefixes == null || allowedPathPrefixes.isEmpty()) {
+            return false;
+        }
+        for (String prefix : allowedPathPrefixes) {
+            if (prefix == null || !prefix.startsWith("/")) {
+                return false;
+            }
+        }
+        return true;
+    }
 }
 ```
 
@@ -285,8 +332,8 @@ public class AemProperties {
 package com.example.aem.mcp.config;
 
 import com.example.aem.mcp.aem.AemProperties;
-import org.springframework.boot.web.client.ClientHttpRequestFactorySettings;
-import org.springframework.boot.web.client.ClientHttpRequestFactories;
+import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
+import org.springframework.boot.http.client.ClientHttpRequestFactorySettings;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.ClientHttpRequestFactory;
@@ -299,10 +346,10 @@ public class AemClientConfig {
 
     @Bean
     public RestClient aemRestClient(AemProperties props) {
-        ClientHttpRequestFactorySettings settings = ClientHttpRequestFactorySettings.DEFAULTS
+        ClientHttpRequestFactorySettings settings = ClientHttpRequestFactorySettings.defaults()
                 .withConnectTimeout(Duration.ofSeconds(5))
                 .withReadTimeout(Duration.ofSeconds(15));
-        ClientHttpRequestFactory factory = ClientHttpRequestFactories.get(settings);
+        ClientHttpRequestFactory factory = ClientHttpRequestFactoryBuilder.detect().build(settings);
 
         return RestClient.builder()
                 .baseUrl(props.getBaseUrl())
@@ -313,10 +360,11 @@ public class AemClientConfig {
 }
 ```
 
-> Note for the agent: `ClientHttpRequestFactories` / `ClientHttpRequestFactorySettings` live in
-> `org.springframework.boot.web.client` in Spring Boot 3.4.x. If you target a different Boot
-> version where these are relocated/deprecated, adjust the imports accordingly but keep the same
-> behaviour (5s connect, 15s read, basic auth from properties).
+> Note for the agent: `ClientHttpRequestFactoryBuilder` / `ClientHttpRequestFactorySettings` live
+> in `org.springframework.boot.http.client` in Spring Boot 3.4.x (the older
+> `org.springframework.boot.web.client.ClientHttpRequestFactories` API is deprecated). If you
+> target a different Boot version where these are relocated, adjust the imports accordingly but
+> keep the same behaviour (5s connect, 15s read, basic auth from properties).
 
 ### Task 5 — `src/main/java/com/example/aem/mcp/aem/AemClient.java`
 
@@ -330,6 +378,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.util.Arrays;
 import java.util.Map;
 
 @Component
@@ -354,7 +403,19 @@ public class AemClient {
 
     public JsonNode getNode(String path, int depth) {
         assertPathAllowed(path);
-        String uri = path + "." + depth + ".tidy.json";
+        // Build the URI per segment so each segment is properly path-encoded, then append the
+        // depth selector + .tidy.json extension. Segment validation in assertPathAllowed already
+        // rejected '.' inside segments, which prevents callers from smuggling Sling selectors
+        // like ".infinity" past this point.
+        String[] segments = Arrays.stream(path.split("/"))
+                .filter(s -> !s.isEmpty())
+                .toArray(String[]::new);
+        String encodedPath = UriComponentsBuilder.fromPath("/")
+                .pathSegment(segments)
+                .build()
+                .encode()
+                .toUriString();
+        String uri = encodedPath + "." + depth + ".tidy.json";
         return aem.get()
                 .uri(uri)
                 .retrieve()
@@ -368,11 +429,52 @@ public class AemClient {
                 .body(JsonNode.class);
     }
 
+    /**
+     * Validates {@code path} against the allow-list with prefix-boundary matching, and rejects
+     * any path containing traversal sequences, empty segments, NUL bytes, control characters,
+     * or '.' inside a segment (which would otherwise be interpreted as a Sling selector and
+     * could bypass intent — e.g. {@code /allowed/page.infinity.json}).
+     */
     public void assertPathAllowed(String path) {
-        if (path == null || !path.startsWith("/")) {
+        if (path == null || path.isEmpty() || !path.startsWith("/")) {
             throw new IllegalArgumentException("Path must be an absolute repository path starting with '/'.");
         }
-        boolean allowed = props.getAllowedPathPrefixes().stream().anyMatch(path::startsWith);
+        // Reject NUL and any other ISO control character outright.
+        for (int i = 0; i < path.length(); i++) {
+            char c = path.charAt(i);
+            if (c == '\0' || Character.isISOControl(c)) {
+                throw new IllegalArgumentException("Path contains illegal control characters.");
+            }
+        }
+        // Reject empty segments (which represent '//') and traversal segments before we even
+        // look at the allow-list — a single leading '/' is allowed by split() producing one
+        // empty leading token, which we filter out below.
+        String[] segments = path.split("/", -1);
+        for (int i = 0; i < segments.length; i++) {
+            String segment = segments[i];
+            if (i == 0) {
+                // leading '/' produces an empty first segment
+                if (!segment.isEmpty()) {
+                    throw new IllegalArgumentException("Path must start with '/'.");
+                }
+                continue;
+            }
+            if (segment.isEmpty()) {
+                throw new IllegalArgumentException("Path must not contain empty segments ('//').");
+            }
+            if (segment.equals(".") || segment.equals("..")) {
+                throw new IllegalArgumentException("Path must not contain traversal segments ('.' or '..').");
+            }
+            if (segment.indexOf('.') >= 0) {
+                // A '.' inside a segment is a Sling selector boundary, not part of the resource
+                // path. Reject so callers cannot reach /content/page.infinity.json or similar.
+                throw new IllegalArgumentException("Path segments must not contain '.' (Sling selectors are not permitted).");
+            }
+        }
+        // Boundary-match against the allow-list: '/content/public' must NOT match
+        // '/content/public-internal'. Allow an exact match or a strict child path.
+        boolean allowed = props.getAllowedPathPrefixes().stream()
+                .anyMatch(p -> path.equals(p) || path.startsWith(p.endsWith("/") ? p : p + "/"));
         if (!allowed) {
             throw new IllegalArgumentException(
                     "Path '" + path + "' is outside the allowed prefixes " + props.getAllowedPathPrefixes());
@@ -388,6 +490,7 @@ package com.example.aem.mcp.audit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
@@ -397,18 +500,39 @@ import java.util.Map;
  * AEM call to the single read-only service account, not the individual developer. The 'caller'
  * field is only as good as what the transport forwards. For true per-developer attribution,
  * propagate caller identity from the MCP client into this logger before claiming individual
- * accountability to auditors.
+ * accountability to auditors. See §4 "Future hardening (Phase 2)".
+ *
+ * Output format is structured JSON so SIEM ingestion does not need a parser. Each call emits a
+ * single line containing the standard fields plus an MDC entry per parameter (`param.<name>`).
  */
 @Component
 public class AuditLogger {
 
     private static final Logger AUDIT = LoggerFactory.getLogger("AEM_MCP_AUDIT");
+    private static final String MSG = "aem.mcp.tool.invoked";
 
     public void record(String tool, String caller, Map<String, ?> params) {
-        AUDIT.info("tool={} caller={} params={}", tool, caller == null ? "service-account" : caller, params);
+        MDC.put("tool", tool);
+        MDC.put("caller", caller == null ? "service-account" : caller);
+        try {
+            if (params != null) {
+                params.forEach((k, v) -> MDC.put("param." + k, v == null ? "" : v.toString()));
+            }
+            AUDIT.info(MSG);
+        } finally {
+            MDC.remove("tool");
+            MDC.remove("caller");
+            if (params != null) {
+                params.keySet().forEach(k -> MDC.remove("param." + k));
+            }
+        }
     }
 }
 ```
+
+> Note for the agent: the JSON encoding is enabled in `application.yml` via Spring Boot 3.4's
+> built-in structured logging (`logging.structured.format.console=ecs`). No `logback-spring.xml`
+> is needed.
 
 ### Task 7 — `src/main/java/com/example/aem/mcp/tools/AemReadOnlyTools.java`
 
@@ -426,6 +550,9 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -444,48 +571,64 @@ public class AemReadOnlyTools {
     }
 
     @Tool(description = """
-            Search AEM content using QueryBuilder. Use this to answer questions like
-            'which pages use a given component or template', 'find content fragments of a model',
-            or 'find assets by name'. Returns a compact list of matching repository paths with a
-            few key properties. Read-only.""")
+            Search AEM content using QueryBuilder. You MUST narrow the search with at least one
+            of: 'type' (JCR node type), 'fulltext' (full-text term), or 'property' (named
+            property match). A path-only search is rejected — it would walk the entire allowed
+            subtree and flood context. Returns a compact list of matching repository paths with
+            a few key properties. Read-only.""")
     public String searchContent(
             @ToolParam(description = "Repository path to search under, e.g. /content/yoursite. Must be within the allowed trees.")
             String path,
-            @ToolParam(description = "JCR node type to match, e.g. cq:Page, dam:Asset, nt:unstructured. Optional.", required = false)
+            @ToolParam(description = "JCR node type to match, e.g. cq:Page, dam:Asset, nt:unstructured. Required unless 'fulltext' or 'property' is set.", required = false)
             String type,
-            @ToolParam(description = "Full-text search term. Optional.", required = false)
+            @ToolParam(description = "Full-text search term. Required unless 'type' or 'property' is set.", required = false)
             String fulltext,
-            @ToolParam(description = "A single property name to match, e.g. sling:resourceType or cq:template. Optional.", required = false)
+            @ToolParam(description = "A single property name to match, e.g. sling:resourceType or cq:template. Required unless 'type' or 'fulltext' is set.", required = false)
             String property,
             @ToolParam(description = "Value the named property must equal. Required only if 'property' is set.", required = false)
             String propertyValue,
             @ToolParam(description = "Max number of hits to return. Capped by the server.", required = false)
             Integer limit) {
 
-        aem.assertPathAllowed(path);
-        int effectiveLimit = clampLimit(limit);
+        try {
+            aem.assertPathAllowed(path);
+            if (!StringUtils.hasText(type) && !StringUtils.hasText(fulltext) && !StringUtils.hasText(property)) {
+                return errorJson("missing_predicate", null,
+                        "Provide at least one of 'type', 'fulltext', or 'property' to narrow the search.");
+            }
+            int effectiveLimit = clampLimit(limit);
 
-        Map<String, String> p = new LinkedHashMap<>();
-        p.put("path", path);
-        if (StringUtils.hasText(type)) {
-            p.put("type", type);
-        }
-        if (StringUtils.hasText(fulltext)) {
-            p.put("fulltext", fulltext);
-        }
-        if (StringUtils.hasText(property)) {
-            p.put("property", property);
-            p.put("property.value", propertyValue == null ? "" : propertyValue);
-        }
-        p.put("p.hits", "selective");
-        p.put("p.properties", "jcr:title jcr:description sling:resourceType cq:template jcr:primaryType");
-        p.put("p.limit", String.valueOf(effectiveLimit));
-        p.put("p.guessTotal", "true");
+            Map<String, String> p = new LinkedHashMap<>();
+            p.put("path", path);
+            if (StringUtils.hasText(type)) {
+                p.put("type", type);
+            }
+            if (StringUtils.hasText(fulltext)) {
+                p.put("fulltext", fulltext);
+            }
+            if (StringUtils.hasText(property)) {
+                p.put("property", property);
+                p.put("property.value", propertyValue == null ? "" : propertyValue);
+            }
+            p.put("p.hits", "selective");
+            p.put("p.properties", "jcr:title jcr:description sling:resourceType cq:template jcr:primaryType");
+            p.put("p.limit", String.valueOf(effectiveLimit));
+            p.put("p.guessTotal", "true");
 
-        audit.record("searchContent", null, p);
+            audit.record("searchContent", null, p);
 
-        JsonNode result = aem.queryBuilder(p);
-        return result == null ? "{}" : result.toString();
+            JsonNode result = aem.queryBuilder(p);
+            return result == null ? "{}" : result.toString();
+        } catch (IllegalArgumentException e) {
+            return errorJson("invalid_argument", null, e.getMessage());
+        } catch (HttpStatusCodeException e) {
+            return mapHttpError(e);
+        } catch (ResourceAccessException e) {
+            return errorJson("aem_unreachable", null,
+                    "Could not reach the AEM author instance. Check network reachability and AEM_BASE_URL.");
+        } catch (RestClientException e) {
+            return errorJson("aem_call_failed", null, e.getMessage());
+        }
     }
 
     @Tool(description = """
@@ -498,16 +641,27 @@ public class AemReadOnlyTools {
             @ToolParam(description = "Tree depth to return (0 = just this node). Capped by the server.", required = false)
             Integer depth) {
 
-        aem.assertPathAllowed(path);
-        int effectiveDepth = clampDepth(depth);
+        try {
+            aem.assertPathAllowed(path);
+            int effectiveDepth = clampDepth(depth);
 
-        Map<String, Object> auditParams = new LinkedHashMap<>();
-        auditParams.put("path", path);
-        auditParams.put("depth", effectiveDepth);
-        audit.record("inspectNode", null, auditParams);
+            Map<String, Object> auditParams = new LinkedHashMap<>();
+            auditParams.put("path", path);
+            auditParams.put("depth", effectiveDepth);
+            audit.record("inspectNode", null, auditParams);
 
-        JsonNode node = aem.getNode(path, effectiveDepth);
-        return node == null ? "{}" : node.toString();
+            JsonNode node = aem.getNode(path, effectiveDepth);
+            return node == null ? "{}" : node.toString();
+        } catch (IllegalArgumentException e) {
+            return errorJson("invalid_argument", null, e.getMessage());
+        } catch (HttpStatusCodeException e) {
+            return mapHttpError(e);
+        } catch (ResourceAccessException e) {
+            return errorJson("aem_unreachable", null,
+                    "Could not reach the AEM author instance. Check network reachability and AEM_BASE_URL.");
+        } catch (RestClientException e) {
+            return errorJson("aem_call_failed", null, e.getMessage());
+        }
     }
 
     @Tool(description = """
@@ -519,9 +673,60 @@ public class AemReadOnlyTools {
             return "{\"disabled\":true,\"reason\":\"Bundle health is turned off in this deployment "
                     + "(requires an elevated AEM principal). Ask the platform team to enable it if needed.\"}";
         }
-        audit.record("bundleHealth", null, Map.of());
-        JsonNode status = aem.bundlesStatus();
-        return status == null ? "{}" : status.toString();
+        try {
+            audit.record("bundleHealth", null, Map.of());
+            JsonNode status = aem.bundlesStatus();
+            return status == null ? "{}" : status.toString();
+        } catch (HttpStatusCodeException e) {
+            return mapHttpError(e);
+        } catch (ResourceAccessException e) {
+            return errorJson("aem_unreachable", null,
+                    "Could not reach the AEM author instance. Check network reachability and AEM_BASE_URL.");
+        } catch (RestClientException e) {
+            return errorJson("aem_call_failed", null, e.getMessage());
+        }
+    }
+
+    private String mapHttpError(HttpStatusCodeException e) {
+        int status = e.getStatusCode().value();
+        String hint = switch (status) {
+            case 401, 403 -> "AEM rejected the service-account credentials or the principal lacks read access to this path. Have the platform team grant read on the allow-listed trees.";
+            case 404 -> "Path not found in AEM. Confirm the node exists and is under an allow-listed prefix.";
+            case 408, 504 -> "AEM did not respond in time. Retry, or check author-instance load.";
+            case 500, 502, 503 -> "AEM returned a server error. Check the author instance and try again.";
+            default -> "AEM returned HTTP " + status + ".";
+        };
+        return errorJson("aem_http_error", status, hint);
+    }
+
+    private String errorJson(String code, Integer status, String hint) {
+        StringBuilder sb = new StringBuilder("{\"error\":\"");
+        sb.append(jsonEscape(code)).append("\",\"status\":");
+        sb.append(status == null ? "null" : status.toString());
+        sb.append(",\"hint\":\"").append(jsonEscape(hint == null ? "" : hint)).append("\"}");
+        return sb.toString();
+    }
+
+    private String jsonEscape(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
     }
 
     private int clampLimit(Integer requested) {
@@ -563,6 +768,99 @@ public class ToolsConfig {
 }
 ```
 
+### Task 8b — `src/main/java/com/example/aem/mcp/config/BearerTokenFilter.java`
+
+Phase 1 transport-level auth: a single shared bearer token guards `/sse`. The token comes from
+`AEM_MCP_TOKEN` and is rotated through the secrets manager. Actuator probes and the root path are
+allow-listed so the k8s liveness/readiness probes are not blocked. Per-developer identity (OIDC
+or mTLS) is Phase 2 — see §4 "Future hardening".
+
+```java
+package com.example.aem.mcp.config;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.util.StringUtils;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Set;
+
+@Configuration
+public class BearerTokenFilter {
+
+    /** Paths that may be reached without a bearer token (k8s probes, root). */
+    private static final Set<String> UNAUTHENTICATED_PATHS = Set.of(
+            "/", "/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness", "/actuator/info");
+
+    @Bean
+    public FilterRegistrationBean<OncePerRequestFilter> bearerTokenFilter(
+            @Value("${aem-mcp.token:}") String expectedToken) {
+
+        if (!StringUtils.hasText(expectedToken)) {
+            throw new IllegalStateException(
+                    "AEM_MCP_TOKEN is not set. Refusing to start without a bearer token — set the env var or fail loudly.");
+        }
+
+        OncePerRequestFilter filter = new OncePerRequestFilter() {
+            @Override
+            protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+                    throws ServletException, IOException {
+                String path = req.getRequestURI();
+                if (UNAUTHENTICATED_PATHS.contains(path)) {
+                    chain.doFilter(req, res);
+                    return;
+                }
+                String header = req.getHeader(HttpHeaders.AUTHORIZATION);
+                if (header == null || !header.startsWith("Bearer ")) {
+                    unauthorized(res, "Missing bearer token");
+                    return;
+                }
+                String presented = header.substring("Bearer ".length()).trim();
+                if (!constantTimeEquals(presented, expectedToken)) {
+                    unauthorized(res, "Invalid bearer token");
+                    return;
+                }
+                chain.doFilter(req, res);
+            }
+        };
+
+        FilterRegistrationBean<OncePerRequestFilter> reg = new FilterRegistrationBean<>(filter);
+        reg.addUrlPatterns("/*");
+        reg.setOrder(Integer.MIN_VALUE);
+        return reg;
+    }
+
+    private static void unauthorized(HttpServletResponse res, String reason) throws IOException {
+        res.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        res.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        res.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
+        res.getOutputStream().write(("{\"error\":\"unauthorized\",\"hint\":\"" + reason + "\"}")
+                .getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static boolean constantTimeEquals(String a, String b) {
+        if (a == null || b == null || a.length() != b.length()) {
+            return false;
+        }
+        int diff = 0;
+        for (int i = 0; i < a.length(); i++) {
+            diff |= a.charAt(i) ^ b.charAt(i);
+        }
+        return diff == 0;
+    }
+}
+```
+
 ### Task 9 — `src/main/resources/application.yml`
 
 ```yaml
@@ -600,21 +898,44 @@ aem:
   max-depth: 3
   bundle-health-enabled: false
 
+# Shared bearer token guarding /sse. MUST be set; the BearerTokenFilter refuses to start without it.
+aem-mcp:
+  token: ${AEM_MCP_TOKEN}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
 logging:
+  structured:
+    format:
+      console: ecs   # Spring Boot 3.4 built-in JSON encoder; one line per log event, no logback-spring.xml needed.
   level:
     AEM_MCP_AUDIT: INFO
 ```
 
 ### Task 10 — `.mcp.json.example`
 
-Committed registration form for clients. Holds only the URL — no secrets.
+Committed registration form for clients. Holds only the URL and references the bearer token via
+an env-var reference (`${AEM_MCP_TOKEN}`) — never the literal token. Claude Code expands the
+reference at load time.
 
 ```json
 {
   "mcpServers": {
     "aem-readonly": {
       "type": "sse",
-      "url": "https://aem-mcp.internal.example.com/sse"
+      "url": "https://aem-mcp.internal.example.com/sse",
+      "headers": {
+        "Authorization": "Bearer ${AEM_MCP_TOKEN}"
+      }
     }
   }
 }
@@ -625,8 +946,10 @@ Committed registration form for clients. Holds only the URL — no secrets.
 ```dockerfile
 # syntax=docker/dockerfile:1
 
+# Base images are pinned to specific patch tags so rebuilds are reproducible and CVE exposure is
+# explicit. Let Dependabot or Renovate manage the bumps; do not loosen to a floating tag.
 # ---- Build stage ----
-FROM maven:3.9-eclipse-temurin-17 AS build
+FROM maven:3.9.9-eclipse-temurin-17 AS build
 WORKDIR /build
 COPY pom.xml .
 RUN mvn -B -q dependency:go-offline
@@ -634,12 +957,15 @@ COPY src ./src
 RUN mvn -B -q clean package -DskipTests
 
 # ---- Runtime stage ----
-FROM eclipse-temurin:17-jre-jammy
+FROM eclipse-temurin:17.0.13_11-jre-jammy
 WORKDIR /app
 RUN groupadd --system app && useradd --system --gid app --home /app app
 COPY --from=build /build/target/aem-readonly-mcp-1.0.0.jar /app/app.jar
 USER app
 EXPOSE 8080
+# Force the JVM to use the writable /tmp volume mounted by the k8s manifest, since the root
+# filesystem is read-only in production (see k8s/deployment.yaml).
+ENV JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/tmp"
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 ```
 
@@ -679,6 +1005,11 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+      # Writable scratch for the JVM (read-only root filesystem below blocks the default /tmp).
+      # JAVA_TOOL_OPTIONS in the Dockerfile points -Djava.io.tmpdir at this mount.
+      volumes:
+        - name: tmp
+          emptyDir: {}
       containers:
         - name: aem-readonly-mcp
           image: registry.internal.example.com/aem-readonly-mcp:1.0.0
@@ -697,6 +1028,26 @@ spec:
                 secretKeyRef:
                   name: aem-mcp-credentials
                   key: AEM_PASSWORD
+            - name: AEM_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aem-mcp-credentials
+                  key: AEM_MCP_TOKEN
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
           resources:
             requests:
               cpu: "100m"
@@ -731,24 +1082,44 @@ spec:
 export AEM_BASE_URL="https://author.internal.example.com:4502"
 export AEM_USERNAME="svc-aem-readonly"
 export AEM_PASSWORD="********"
+# Shared bearer token guarding /sse. Generate a strong random value (e.g. `openssl rand -hex 32`)
+# and rotate it through your secrets manager. The server refuses to start without it.
+export AEM_MCP_TOKEN="$(openssl rand -hex 32)"
 
 mvn clean package
 java -jar target/aem-readonly-mcp-1.0.0.jar
 ```
 
-Server starts on port 8080; SSE endpoint is `/sse`.
+Server starts on port 8080; SSE endpoint is `/sse`. Actuator probes (`/actuator/health/liveness`,
+`/actuator/health/readiness`) are unauthenticated; every other path requires the bearer token.
 
 ## 9. Acceptance Criteria (the agent must verify all)
 
 1. `mvn clean package` succeeds with no compilation errors.
 1. The application starts and logs the three tools as registered.
-1. With valid AEM env vars and a reachable author instance:
-- `searchContent` under an allowed path returns QueryBuilder hits.
+1. Startup fails fast with a clear message if `AEM_MCP_TOKEN` is unset (BearerTokenFilter).
+1. With valid AEM env vars, the bearer token, and a reachable author instance:
+- `searchContent` under an allowed path with at least one of `type`/`fulltext`/`property`
+  returns QueryBuilder hits; calling it without any of those returns the `missing_predicate`
+  structured error.
 - `inspectNode` on an allowed path returns node JSON; depth above `max-depth` is clamped.
 - A path outside `allowed-path-prefixes` is rejected before any AEM call.
+- A path containing `..`, `//`, a control character, or a segment with `.` (e.g.
+  `/content/yoursite/home.infinity.json`) is rejected by `assertPathAllowed` before any AEM call.
+- A boundary-bypass attempt (e.g. allow-list `/content/public`, request
+  `/content/public-internal/...`) is rejected.
 - `bundleHealth` returns the `disabled` message while `bundle-health-enabled` is false.
+- AEM errors (401/403/404/timeout/unreachable) surface as `{error,status,hint}` JSON, not
+  uncaught exceptions.
+1. Calling `/sse` without `Authorization: Bearer <token>` returns 401 with the structured error
+   body and `WWW-Authenticate: Bearer` header; the actuator probe endpoints remain reachable
+   without the token.
+1. `/actuator/health/liveness` and `/actuator/health/readiness` return 200 on a healthy instance.
+1. The audit log emits one JSON line per tool call containing `tool`, `caller`, and `param.*`
+   fields (verifiable with `grep aem.mcp.tool.invoked`).
 1. No credentials appear in source, `application.yml`, `.mcp.json.example`, or the image.
-1. Container builds and runs as non-root; secrets are injected, not baked.
+1. Container builds and runs as non-root with a read-only root filesystem; `/tmp` is a writable
+   `emptyDir`; secrets are injected, not baked.
 
 ## 10. Containerize & Deploy — Phase 1
 
@@ -758,12 +1129,14 @@ docker run --rm -p 8080:8080 \
   -e AEM_BASE_URL="https://author.internal.example.com:4502" \
   -e AEM_USERNAME="svc-aem-readonly" \
   -e AEM_PASSWORD="********" \
+  -e AEM_MCP_TOKEN="$(openssl rand -hex 32)" \
   registry.internal.example.com/aem-readonly-mcp:1.0.0
 
 # Kubernetes
 kubectl create secret generic aem-mcp-credentials \
   --from-literal=AEM_USERNAME='svc-aem-readonly' \
-  --from-literal=AEM_PASSWORD='********'
+  --from-literal=AEM_PASSWORD='********' \
+  --from-literal=AEM_MCP_TOKEN="$(openssl rand -hex 32)"
 kubectl apply -f k8s/deployment.yaml
 ```
 
@@ -773,13 +1146,22 @@ The same artifact serves both phases — only the host and secret injection diff
 
 ```bash
 # Phase 0 (local)
-claude mcp add --transport sse --scope local aem-readonly http://localhost:8080/sse
+claude mcp add --transport sse --scope local aem-readonly http://localhost:8080/sse \
+  --header "Authorization: Bearer ${AEM_MCP_TOKEN}"
 
 # Phase 1 (central, shared via git .mcp.json)
-claude mcp add --transport sse --scope project aem-readonly https://aem-mcp.internal.example.com/sse
+claude mcp add --transport sse --scope project aem-readonly https://aem-mcp.internal.example.com/sse \
+  --header "Authorization: Bearer \${AEM_MCP_TOKEN}"
 ```
 
-Verify with `/mcp` inside Claude Code; the `aem-readonly` server should list three tools.
+> Note on transport spelling: the CLI flag is `--transport sse`, but inside a committed
+> `.mcp.json` (see Task 10) the equivalent field is `"type": "sse"`. Both refer to the same
+> setting; the JSON field name is what Claude Code parses on disk. Use whichever matches the
+> documentation for your Claude Code version, but the example file uses `"type"`.
+
+Verify with `/mcp` inside Claude Code; the `aem-readonly` server should list three tools. A
+mis-set or missing token surfaces as a `{"error":"unauthorized",...}` body and `WWW-Authenticate:
+Bearer` header from the server.
 
 ## 12. Transport upgrade (optional): SSE → streamable HTTP
 
@@ -797,7 +1179,7 @@ This project is the seed for a family of read-only internal MCP servers:
 1. Copy it; rename `groupId`/`artifactId`/base package.
 1. Replace `AemClient` with a thin client for the next system’s read API.
 1. Rewrite the `@Tool` methods — aim for 2–5 high-value tools, not a wrapper around everything.
-1. Keep all six Security Constraints intact.
+1. Keep all seven Security Constraints intact.
 1. Record the definition-of-done in the marketplace `DECISION_GUIDE.md`.
 
 ## 14. Compliance gates to clear before production (verify, do not assume)
