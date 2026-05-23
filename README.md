@@ -50,7 +50,7 @@ Safe-by-default. The server enforces seven constraints documented in
 - Maven 3.9+
 - An AEM read-only service account with read access to the trees you intend to allow-list
 - Network reachability from the server to the AEM author instance
-- For containerized deploy: Docker + a Kubernetes namespace and secrets manager
+- For the containerized deploy: Docker Desktop (or any host with Docker Engine + Compose v2)
 
 ## Project layout
 
@@ -60,9 +60,10 @@ Safe-by-default. The server enforces seven constraints documented in
 ├── pom.xml
 ├── Dockerfile
 ├── .dockerignore
+├── compose.yaml                   # Docker Compose stack (recommended deploy)
+├── secrets/
+│   └── aem-mcp-secrets.properties.example   # Copy and fill in, then chmod 600
 ├── .mcp.json.example              # Sample Claude Code registration (no secrets)
-├── k8s/
-│   └── deployment.yaml            # Phase 1 manifest (Deployment + Service)
 └── src/main/
     ├── java/com/example/aem/mcp/
     │   ├── AemMcpApplication.java
@@ -83,15 +84,25 @@ Safe-by-default. The server enforces seven constraints documented in
 
 ## Configuration
 
-Bound from environment variables. Defaults live in
-[`src/main/resources/application.yml`](src/main/resources/application.yml).
+The non-secret base URL is bound from an environment variable. The three secret values
+(`aem.username`, `aem.password`, `aem-mcp.token`) come from one of two property sources:
 
-| Env var          | Required | Purpose                                                                       |
-| ---------------- | -------- | ----------------------------------------------------------------------------- |
-| `AEM_BASE_URL`   | yes      | Base URL of the AEM author instance, e.g. `https://author.internal:4502`     |
-| `AEM_USERNAME`   | yes      | Read-only AEM service account                                                 |
-| `AEM_PASSWORD`   | yes      | Service account password                                                      |
-| `AEM_MCP_TOKEN`  | yes      | Shared bearer token guarding `/sse` (e.g. `openssl rand -hex 32`)             |
+- **Docker Compose**: `secrets/aem-mcp-secrets.properties` on the host, mounted into the
+  container at `/run/secrets/aem-mcp-secrets.properties`. Imported by Spring Boot via
+  `spring.config.import` in [`application.yml`](src/main/resources/application.yml).
+- **`java -jar` / `mvn spring-boot:run` (dev)**: the same env-var names work as a fallback
+  because the placeholders in `application.yml` are
+  `${AEM_USERNAME:}` / `${AEM_PASSWORD:}` / `${AEM_MCP_TOKEN:}`.
+
+| Setting             | Compose source                                              | Env-var fallback   | Notes                                                                  |
+| ------------------- | ----------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------- |
+| `AEM_BASE_URL`      | `compose.yaml` `environment:` block (not secret)            | `AEM_BASE_URL`     | Base URL of the AEM author instance                                    |
+| `aem.username`      | `secrets/aem-mcp-secrets.properties` → `aem.username=...`   | `AEM_USERNAME`     | Read-only AEM service account                                          |
+| `aem.password`      | `secrets/aem-mcp-secrets.properties` → `aem.password=...`   | `AEM_PASSWORD`     | Service account password                                               |
+| `aem-mcp.token`     | `secrets/aem-mcp-secrets.properties` → `aem-mcp.token=...`  | `AEM_MCP_TOKEN`    | Shared bearer token guarding `/sse` (`openssl rand -hex 32`)           |
+
+`@NotBlank` validation fails fast at startup if any required value is missing from both
+sources.
 
 Per-deployment knobs in `application.yml`:
 
@@ -103,7 +114,33 @@ Per-deployment knobs in `application.yml`:
 | `aem.max-depth`                | `3`                            | Hard cap on `inspectNode` depth                                       |
 | `aem.bundle-health-enabled`    | `false`                        | Set `true` only if the service account has `/system/console` access  |
 
-## Build & run — Phase 0 (local proof of concept)
+## Run with Docker Compose (recommended)
+
+```bash
+# 1. Create the secrets file from the template.
+cp secrets/aem-mcp-secrets.properties.example secrets/aem-mcp-secrets.properties
+chmod 600 secrets/aem-mcp-secrets.properties
+
+# 2. Edit the file: set aem.username, aem.password, and aem-mcp.token.
+#    Generate a strong token with: openssl rand -hex 32
+$EDITOR secrets/aem-mcp-secrets.properties
+
+# 3. (Optional) point at your AEM author. Default is a placeholder.
+#    Edit AEM_BASE_URL under `environment:` in compose.yaml.
+
+# 4. Build and start.
+docker compose up -d
+docker compose logs -f aem-readonly-mcp
+```
+
+The container binds to `127.0.0.1:8080` by default (loopback only). The MCP SSE endpoint is
+`/sse`; actuator probes live at `/actuator/health/{liveness,readiness}`. Secrets are mounted
+read-only at `/run/secrets/aem-mcp-secrets.properties` and Spring Boot imports them via
+`spring.config.import` — they do **not** appear in `docker inspect` env nor in `ps`.
+
+To stop: `docker compose down`. To rebuild after a code change: `docker compose up -d --build`.
+
+## Run locally without Docker (dev loop)
 
 ```bash
 export AEM_BASE_URL="https://author.internal.example.com:4502"
@@ -115,28 +152,8 @@ mvn clean package
 java -jar target/aem-readonly-mcp-1.0.0.jar
 ```
 
-The server listens on port 8080. The MCP SSE endpoint is `/sse`. Probes
-are at `/actuator/health/liveness` and `/actuator/health/readiness`.
-
-## Container & Kubernetes — Phase 1
-
-```bash
-docker build -t registry.internal.example.com/aem-readonly-mcp:1.0.0 .
-
-docker run --rm -p 8080:8080 \
-  -e AEM_BASE_URL="https://author.internal.example.com:4502" \
-  -e AEM_USERNAME="svc-aem-readonly" \
-  -e AEM_PASSWORD="********" \
-  -e AEM_MCP_TOKEN="$(openssl rand -hex 32)" \
-  registry.internal.example.com/aem-readonly-mcp:1.0.0
-
-# Kubernetes
-kubectl create secret generic aem-mcp-credentials \
-  --from-literal=AEM_USERNAME='svc-aem-readonly' \
-  --from-literal=AEM_PASSWORD='********' \
-  --from-literal=AEM_MCP_TOKEN="$(openssl rand -hex 32)"
-kubectl apply -f k8s/deployment.yaml
-```
+Same listen port (`8080`), same endpoints. Useful for quick iteration; the Compose path is
+the recommended deploy.
 
 ## Register with Claude Code
 

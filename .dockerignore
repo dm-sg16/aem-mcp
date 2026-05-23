@@ -6,3 +6,6 @@ target/
 *.log
 .env
 *.env
+# Compose secrets live on the host and are mounted at runtime — never baked into the image.
+secrets/
+compose.yaml

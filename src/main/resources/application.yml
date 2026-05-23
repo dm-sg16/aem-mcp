@@ -4,6 +4,12 @@ server:
 spring:
   application:
     name: aem-readonly-mcp
+  # Optional file-mounted secrets. When running under Docker Compose this file is mounted from
+  # the host (see compose.yaml). Values defined here override the env-var placeholders below.
+  # Missing file is fine — `optional:` prefix makes the import a no-op, and the env-var
+  # placeholders take over for plain `java -jar` / `mvn spring-boot:run` workflows.
+  config:
+    import: optional:file:/run/secrets/aem-mcp-secrets.properties
   ai:
     mcp:
       server:
@@ -22,8 +28,8 @@ spring:
 
 aem:
   base-url: ${AEM_BASE_URL:https://author.internal.example.com:4502}
-  username: ${AEM_USERNAME}
-  password: ${AEM_PASSWORD}
+  username: ${AEM_USERNAME:}
+  password: ${AEM_PASSWORD:}
   allowed-path-prefixes:
     - /content/yoursite
     - /content/dam/yoursite
@@ -32,9 +38,10 @@ aem:
   max-depth: 3
   bundle-health-enabled: false
 
-# Shared bearer token guarding /sse. MUST be set; the BearerTokenFilter refuses to start without it.
+# Shared bearer token guarding /sse. MUST resolve to a non-empty value via the secrets file
+# import above or the AEM_MCP_TOKEN env var; BearerTokenFilter refuses to start otherwise.
 aem-mcp:
-  token: ${AEM_MCP_TOKEN}
+  token: ${AEM_MCP_TOKEN:}
 
 management:
   endpoints:
