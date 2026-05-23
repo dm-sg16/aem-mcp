@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aem-readonly-mcp
+  labels:
+    app: aem-readonly-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aem-readonly-mcp
+  template:
+    metadata:
+      labels:
+        app: aem-readonly-mcp
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      # Writable scratch for the JVM (read-only root filesystem below blocks the default /tmp).
+      # JAVA_TOOL_OPTIONS in the Dockerfile points -Djava.io.tmpdir at this mount.
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: aem-readonly-mcp
+          image: registry.internal.example.com/aem-readonly-mcp:1.0.0
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AEM_BASE_URL
+              value: "https://author.internal.example.com:4502"
+            - name: AEM_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: aem-mcp-credentials
+                  key: AEM_USERNAME
+            - name: AEM_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aem-mcp-credentials
+                  key: AEM_PASSWORD
+            - name: AEM_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aem-mcp-credentials
+                  key: AEM_MCP_TOKEN
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aem-readonly-mcp
+spec:
+  selector:
+    app: aem-readonly-mcp
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: ClusterIP
