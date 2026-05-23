@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "aem-readonly": {
+      "type": "sse",
+      "url": "https://aem-mcp.internal.example.com/sse",
+      "headers": {
+        "Authorization": "Bearer ${AEM_MCP_TOKEN}"
+      }
+    }
+  }
+}

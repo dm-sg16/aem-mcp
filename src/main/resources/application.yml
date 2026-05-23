@@ -1,0 +1,55 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: aem-readonly-mcp
+  ai:
+    mcp:
+      server:
+        name: aem-readonly-mcp
+        version: 1.0.0
+        type: SYNC
+        # Default transport is SSE (endpoint /sse). To use streamable HTTP, change the pom
+        # dependency to spring-ai-starter-mcp-server-streamable-webmvc and uncomment:
+        # protocol: STREAMABLE
+        # streamable-http:
+        #   mcp-endpoint: /mcp
+        capabilities:
+          tool: true
+          resource: false
+          prompt: false
+
+aem:
+  base-url: ${AEM_BASE_URL:https://author.internal.example.com:4502}
+  username: ${AEM_USERNAME}
+  password: ${AEM_PASSWORD}
+  allowed-path-prefixes:
+    - /content/yoursite
+    - /content/dam/yoursite
+  default-limit: 20
+  max-limit: 100
+  max-depth: 3
+  bundle-health-enabled: false
+
+# Shared bearer token guarding /sse. MUST be set; the BearerTokenFilter refuses to start without it.
+aem-mcp:
+  token: ${AEM_MCP_TOKEN}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+logging:
+  structured:
+    format:
+      console: ecs   # Spring Boot 3.4 built-in JSON encoder; one line per log event, no logback-spring.xml needed.
+  level:
+    AEM_MCP_AUDIT: INFO
