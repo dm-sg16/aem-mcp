@@ -1016,6 +1016,8 @@ services:
   aem-readonly-mcp:
     build: .
     image: aem-readonly-mcp:1.0.0
+    # Build locally; never try to pull `image:` from a registry.
+    pull_policy: build
     container_name: aem-readonly-mcp
     restart: unless-stopped
     ports:
@@ -1028,7 +1030,6 @@ services:
       - source: aem-mcp-secrets
         # Mounted at /run/secrets/aem-mcp-secrets.properties inside the container.
         target: aem-mcp-secrets.properties
-        mode: 0400
     read_only: true
     tmpfs:
       - /tmp:rw,size=64m

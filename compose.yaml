@@ -11,6 +11,10 @@ services:
   aem-readonly-mcp:
     build: .
     image: aem-readonly-mcp:1.0.0
+    # Build locally; never try to pull `image:` from a registry (it doesn't exist on Docker Hub).
+    # Without this, Compose tries `docker pull aem-readonly-mcp:1.0.0` first and prints a noisy
+    # "pull access denied" before falling back to the build.
+    pull_policy: build
     container_name: aem-readonly-mcp
     restart: unless-stopped
     ports:
@@ -24,8 +28,9 @@ services:
       - source: aem-mcp-secrets
         # Mounted at /run/secrets/aem-mcp-secrets.properties inside the container.
         # Spring Boot's spring.config.import in application.yml points here.
+        # (`mode:` would be nice here but it's Swarm-only — plain Compose ignores it with a
+        # warning. The file is still mounted read-only at the bind-mount level.)
         target: aem-mcp-secrets.properties
-        mode: 0400
     read_only: true
     tmpfs:
       # The image's JAVA_TOOL_OPTIONS sets -Djava.io.tmpdir=/tmp; the read-only root
