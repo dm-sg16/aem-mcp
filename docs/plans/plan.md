@@ -40,18 +40,25 @@ These are mandatory and define the project’s value proposition (safe-by-defaul
    prefix is rejected *before* an HTTP request is sent to AEM.
 1. **Result/depth caps.** QueryBuilder hit counts and node-inspection depth are clamped to
    server-side maximums to protect context size and author-instance load.
-1. **Secrets only from environment / secrets manager.** `AEM_USERNAME`, `AEM_PASSWORD`,
-   `AEM_BASE_URL`, and `AEM_MCP_TOKEN` come from env. `.mcp.json` holds only the server URL and
-   env-var *references* (e.g. `${AEM_MCP_TOKEN}`) — never literal secrets. Nothing secret is
-   committed or baked into the image.
+1. **Secrets out-of-band.** In the Docker Compose deploy the three secret values
+   (`aem.username`, `aem.password`, `aem-mcp.token`) live in a gitignored properties file at
+   `./secrets/aem-mcp-secrets.properties`, mounted read-only into the container at
+   `/run/secrets/aem-mcp-secrets.properties` and imported by Spring Boot via
+   `spring.config.import`. They never appear in `docker inspect` env nor in `ps`. For plain
+   `java -jar` development the same names work as `AEM_USERNAME` / `AEM_PASSWORD` /
+   `AEM_MCP_TOKEN` env vars (the application.yml placeholders accept either). `AEM_BASE_URL`
+   is not secret and lives in `compose.yaml`'s `environment:` block. `.mcp.json` holds only the
+   server URL and env-var *references* (e.g. `${AEM_MCP_TOKEN}`) — never literal secrets.
+   Nothing secret is committed or baked into the image.
 1. **Audit trail.** Every tool call is logged (tool, caller, params) to a dedicated logger for SIEM
    shipment. Note the identity caveat in Task 7 — a shared service account cannot, by itself,
    attribute calls to an individual developer.
 1. **Read-only container.** Runs as non-root; production filesystem is read-only.
-1. **Transport authentication on `/sse`.** A shared bearer token (`AEM_MCP_TOKEN`) is required
-   on every MCP request in Phase 1; the server refuses to start if the token is unset. Only the
-   k8s probe endpoints under `/actuator/health/*` are exempt. Per-developer identity (OIDC or
-   mTLS) is the Phase 2 successor — see §4 "Future hardening".
+1. **Transport authentication on `/sse`.** A shared bearer token (the `aem-mcp.token` property,
+   sourced from the secrets file or the `AEM_MCP_TOKEN` env var) is required on every MCP
+   request; the server refuses to start if the token is unset. Only the probe endpoints under
+   `/actuator/health/*` are exempt. Per-developer identity (OIDC or mTLS) is the Phase 2
+   successor — see §4 "Future hardening".
 
 ## 4. Architecture
 
@@ -105,7 +112,7 @@ Keep the Spring Boot and Spring AI versions aligned when bumping; 3.4.x is the b
 - JDK 17 and Maven available (build machine needs Maven Central access).
 - A read-only AEM service account provisioned with read access to the trees you will allow-list.
 - Network reachability from where the server runs to the AEM author instance.
-- For containerized deploy: Docker, and a Kubernetes namespace + secrets manager for Phase 1.
+- For the containerized deploy: Docker Desktop (or any host with Docker Engine + Compose v2).
 
 ## 7. Project Structure (target)
 
@@ -116,8 +123,10 @@ aem-readonly-mcp/
 ├── .dockerignore
 ├── README.md
 ├── .mcp.json.example
-├── k8s/
-│   └── deployment.yaml
+├── compose.yaml
+├── secrets/
+│   ├── .gitkeep
+│   └── aem-mcp-secrets.properties.example
 └── src/main/
     ├── java/com/example/aem/mcp/
     │   ├── AemMcpApplication.java
@@ -770,10 +779,11 @@ public class ToolsConfig {
 
 ### Task 8b — `src/main/java/com/example/aem/mcp/config/BearerTokenFilter.java`
 
-Phase 1 transport-level auth: a single shared bearer token guards `/sse`. The token comes from
-`AEM_MCP_TOKEN` and is rotated through the secrets manager. Actuator probes and the root path are
-allow-listed so the k8s liveness/readiness probes are not blocked. Per-developer identity (OIDC
-or mTLS) is Phase 2 — see §4 "Future hardening".
+Transport-level auth: a single shared bearer token guards `/sse`. The token comes from the
+`aem-mcp.token` property (sourced from the mounted secrets file or the `AEM_MCP_TOKEN` env
+var). Actuator probes and the root path are allow-listed so container liveness/readiness
+probes (Compose's TCP healthcheck, or an external HTTP poller) are not blocked. Per-developer
+identity (OIDC or mTLS) is Phase 2 — see §4 "Future hardening".
 
 ```java
 package com.example.aem.mcp.config;
@@ -798,7 +808,7 @@ import java.util.Set;
 @Configuration
 public class BearerTokenFilter {
 
-    /** Paths that may be reached without a bearer token (k8s probes, root). */
+    /** Paths that may be reached without a bearer token (container/external probes, root). */
     private static final Set<String> UNAUTHENTICATED_PATHS = Set.of(
             "/", "/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness", "/actuator/info");
 
@@ -808,7 +818,9 @@ public class BearerTokenFilter {
 
         if (!StringUtils.hasText(expectedToken)) {
             throw new IllegalStateException(
-                    "AEM_MCP_TOKEN is not set. Refusing to start without a bearer token — set the env var or fail loudly.");
+                    "aem-mcp.token is empty. Refusing to start without a bearer token. "
+                            + "Set it via secrets/aem-mcp-secrets.properties (Docker Compose) "
+                            + "or the AEM_MCP_TOKEN env var (local dev).");
         }
 
         OncePerRequestFilter filter = new OncePerRequestFilter() {
@@ -870,6 +882,12 @@ server:
 spring:
   application:
     name: aem-readonly-mcp
+  # Optional file-mounted secrets. When running under Docker Compose this file is mounted from
+  # the host (see compose.yaml). Values defined here override the env-var placeholders below.
+  # Missing file is fine — `optional:` prefix makes the import a no-op, and the env-var
+  # placeholders take over for plain `java -jar` / `mvn spring-boot:run` workflows.
+  config:
+    import: optional:file:/run/secrets/aem-mcp-secrets.properties
   ai:
     mcp:
       server:
@@ -888,8 +906,8 @@ spring:
 
 aem:
   base-url: ${AEM_BASE_URL:https://author.internal.example.com:4502}
-  username: ${AEM_USERNAME}
-  password: ${AEM_PASSWORD}
+  username: ${AEM_USERNAME:}
+  password: ${AEM_PASSWORD:}
   allowed-path-prefixes:
     - /content/yoursite
     - /content/dam/yoursite
@@ -898,9 +916,10 @@ aem:
   max-depth: 3
   bundle-health-enabled: false
 
-# Shared bearer token guarding /sse. MUST be set; the BearerTokenFilter refuses to start without it.
+# Shared bearer token guarding /sse. MUST resolve to a non-empty value via the secrets file
+# import above or the AEM_MCP_TOKEN env var; BearerTokenFilter refuses to start otherwise.
 aem-mcp:
-  token: ${AEM_MCP_TOKEN}
+  token: ${AEM_MCP_TOKEN:}
 
 management:
   endpoints:
@@ -963,8 +982,8 @@ RUN groupadd --system app && useradd --system --gid app --home /app app
 COPY --from=build /build/target/aem-readonly-mcp-1.0.0.jar /app/app.jar
 USER app
 EXPOSE 8080
-# Force the JVM to use the writable /tmp volume mounted by the k8s manifest, since the root
-# filesystem is read-only in production (see k8s/deployment.yaml).
+# Force the JVM to use the writable tmpfs mounted at /tmp by Compose (see compose.yaml),
+# since the root filesystem is read-only in production.
 ENV JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=/tmp"
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 ```
@@ -982,97 +1001,68 @@ target/
 *.env
 ```
 
-### Task 13 — `k8s/deployment.yaml` (Phase 1 deploy)
+### Task 13 — `compose.yaml` + `secrets/aem-mcp-secrets.properties.example`
 
-Create the Secret out of band (or via your secrets manager), then apply this manifest.
+Single-host containerized deploy. The Compose stack carries forward every security primitive
+that the previous Kubernetes manifest enforced (non-root, read-only filesystem, dropped
+capabilities, writable `/tmp`, lifecycle restart) and replaces `secretKeyRef` env injection
+with file-mounted Compose secrets — the values never reach `docker inspect` or the process
+list. Spring Boot picks them up via the `spring.config.import` declared in Task 9's
+`application.yml`.
 
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: aem-readonly-mcp
-  labels:
-    app: aem-readonly-mcp
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: aem-readonly-mcp
-  template:
-    metadata:
-      labels:
-        app: aem-readonly-mcp
-    spec:
-      securityContext:
-        runAsNonRoot: true
-      # Writable scratch for the JVM (read-only root filesystem below blocks the default /tmp).
-      # JAVA_TOOL_OPTIONS in the Dockerfile points -Djava.io.tmpdir at this mount.
-      volumes:
-        - name: tmp
-          emptyDir: {}
-      containers:
-        - name: aem-readonly-mcp
-          image: registry.internal.example.com/aem-readonly-mcp:1.0.0
-          ports:
-            - containerPort: 8080
-          env:
-            - name: AEM_BASE_URL
-              value: "https://author.internal.example.com:4502"
-            - name: AEM_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: aem-mcp-credentials
-                  key: AEM_USERNAME
-            - name: AEM_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: aem-mcp-credentials
-                  key: AEM_PASSWORD
-            - name: AEM_MCP_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: aem-mcp-credentials
-                  key: AEM_MCP_TOKEN
-          volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-          readinessProbe:
-            httpGet:
-              path: /actuator/health/readiness
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /actuator/health/liveness
-              port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 20
-          resources:
-            requests:
-              cpu: "100m"
-              memory: "256Mi"
-            limits:
-              cpu: "500m"
-              memory: "512Mi"
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: aem-readonly-mcp
-spec:
-  selector:
-    app: aem-readonly-mcp
-  ports:
-    - port: 80
-      targetPort: 8080
-  type: ClusterIP
+# compose.yaml
+services:
+  aem-readonly-mcp:
+    build: .
+    image: aem-readonly-mcp:1.0.0
+    container_name: aem-readonly-mcp
+    restart: unless-stopped
+    ports:
+      # Loopback-only by default — this is a developer tool, not a public service.
+      - "127.0.0.1:8080:8080"
+    environment:
+      # Non-secret config. Override per host as needed.
+      AEM_BASE_URL: "https://author.internal.example.com:4502"
+    secrets:
+      - source: aem-mcp-secrets
+        # Mounted at /run/secrets/aem-mcp-secrets.properties inside the container.
+        target: aem-mcp-secrets.properties
+        mode: 0400
+    read_only: true
+    tmpfs:
+      - /tmp:rw,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      # TCP probe — the runtime image doesn't ship curl/wget. Actuator HTTP probes are still
+      # reachable from the host for richer status.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo ok || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+secrets:
+  aem-mcp-secrets:
+    file: ./secrets/aem-mcp-secrets.properties
 ```
+
+```properties
+# secrets/aem-mcp-secrets.properties.example
+# Copy to aem-mcp-secrets.properties, fill in real values, `chmod 600`. The real file is
+# gitignored (see .gitignore: secrets/*.properties).
+# Generate a strong bearer token with:  openssl rand -hex 32
+aem.username=svc-aem-readonly
+aem.password=REPLACE_ME
+aem-mcp.token=REPLACE_ME
+```
+
+Also add an empty `secrets/.gitkeep` so the directory survives a fresh clone, and append
+`secrets/*.properties` + `.env` to `.gitignore`, and `secrets/` + `compose.yaml` to
+`.dockerignore`.
 
 -----
 
@@ -1097,8 +1087,9 @@ Server starts on port 8080; SSE endpoint is `/sse`. Actuator probes (`/actuator/
 
 1. `mvn clean package` succeeds with no compilation errors.
 1. The application starts and logs the three tools as registered.
-1. Startup fails fast with a clear message if `AEM_MCP_TOKEN` is unset (BearerTokenFilter).
-1. With valid AEM env vars, the bearer token, and a reachable author instance:
+1. Startup fails fast with a clear message if neither the secrets file nor `AEM_MCP_TOKEN`
+   provides a value for `aem-mcp.token` (BearerTokenFilter).
+1. With valid AEM credentials, the bearer token, and a reachable author instance:
 - `searchContent` under an allowed path with at least one of `type`/`fulltext`/`property`
   returns QueryBuilder hits; calling it without any of those returns the `missing_predicate`
   structured error.
@@ -1117,30 +1108,40 @@ Server starts on port 8080; SSE endpoint is `/sse`. Actuator probes (`/actuator/
 1. `/actuator/health/liveness` and `/actuator/health/readiness` return 200 on a healthy instance.
 1. The audit log emits one JSON line per tool call containing `tool`, `caller`, and `param.*`
    fields (verifiable with `grep aem.mcp.tool.invoked`).
-1. No credentials appear in source, `application.yml`, `.mcp.json.example`, or the image.
-1. Container builds and runs as non-root with a read-only root filesystem; `/tmp` is a writable
-   `emptyDir`; secrets are injected, not baked.
+1. No credentials appear in source, `application.yml`, `.mcp.json.example`, or the image. The
+   real `secrets/aem-mcp-secrets.properties` is gitignored; only the `.example` template is
+   committed.
+1. `docker compose up -d` builds and starts the container as non-root, with a read-only root
+   filesystem and a writable tmpfs at `/tmp`; the secrets file is mounted read-only at
+   `/run/secrets/aem-mcp-secrets.properties` and Spring Boot picks up `aem.username`,
+   `aem.password`, and `aem-mcp.token` from it. `docker inspect aem-readonly-mcp` shows no
+   secret values in `.Config.Env` (only the non-secret `AEM_BASE_URL`).
 
-## 10. Containerize & Deploy — Phase 1
+## 10. Containerize & Deploy with Docker Compose
 
 ```bash
-docker build -t registry.internal.example.com/aem-readonly-mcp:1.0.0 .
-docker run --rm -p 8080:8080 \
-  -e AEM_BASE_URL="https://author.internal.example.com:4502" \
-  -e AEM_USERNAME="svc-aem-readonly" \
-  -e AEM_PASSWORD="********" \
-  -e AEM_MCP_TOKEN="$(openssl rand -hex 32)" \
-  registry.internal.example.com/aem-readonly-mcp:1.0.0
+# 1. Create the secrets file from the template and chmod it.
+cp secrets/aem-mcp-secrets.properties.example secrets/aem-mcp-secrets.properties
+chmod 600 secrets/aem-mcp-secrets.properties
 
-# Kubernetes
-kubectl create secret generic aem-mcp-credentials \
-  --from-literal=AEM_USERNAME='svc-aem-readonly' \
-  --from-literal=AEM_PASSWORD='********' \
-  --from-literal=AEM_MCP_TOKEN="$(openssl rand -hex 32)"
-kubectl apply -f k8s/deployment.yaml
+# 2. Edit the file: set aem.username, aem.password, and aem-mcp.token
+#    (`openssl rand -hex 32` for the token).
+$EDITOR secrets/aem-mcp-secrets.properties
+
+# 3. (Optional) point at your AEM author. Default is a placeholder.
+#    Edit AEM_BASE_URL under `environment:` in compose.yaml.
+
+# 4. Build and start.
+docker compose up -d
+docker compose logs -f aem-readonly-mcp
 ```
 
-The same artifact serves both phases — only the host and secret injection differ.
+The same Dockerfile underlies both the local `mvn package` workflow (Phase 0) and this
+Compose-based deploy — only the secret-injection path differs (env vars vs. mounted file).
+
+For multi-host or HA hosting you would re-introduce a Kubernetes manifest, an
+External-Secrets-Operator-backed `Secret`, and an ingress; that's deliberately out of scope
+for this build (see §13 "Reuse as a template" for the divergence points).
 
 ## 11. Register with Claude Code
 

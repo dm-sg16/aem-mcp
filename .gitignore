@@ -1,6 +1,10 @@
 # Maven build output
 target/
 
+# Secrets — only the .example template is committed.
+secrets/*.properties
+.env
+
 # Compiled class file
 *.class
 

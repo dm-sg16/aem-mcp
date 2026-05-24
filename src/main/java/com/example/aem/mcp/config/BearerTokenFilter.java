@@ -29,7 +29,9 @@ public class BearerTokenFilter {
 
         if (!StringUtils.hasText(expectedToken)) {
             throw new IllegalStateException(
-                    "AEM_MCP_TOKEN is not set. Refusing to start without a bearer token — set the env var or fail loudly.");
+                    "aem-mcp.token is empty. Refusing to start without a bearer token. "
+                            + "Set it via secrets/aem-mcp-secrets.properties (Docker Compose) "
+                            + "or the AEM_MCP_TOKEN env var (local dev).");
         }
 
         OncePerRequestFilter filter = new OncePerRequestFilter() {

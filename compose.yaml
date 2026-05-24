@@ -1,0 +1,52 @@
+# Docker Compose stack for the AEM read-only MCP server.
+# Replaces the Phase 1 Kubernetes manifest for single-host deployments
+# (developer laptops, small VMs). Run with: `docker compose up -d`.
+#
+# Secrets are stored on the host at ./secrets/aem-mcp-secrets.properties
+# (gitignored) and mounted into the container at /run/secrets/<name>.
+# Spring Boot reads them via spring.config.import in application.yml,
+# so they never appear in `docker inspect` env nor in the process list.
+
+services:
+  aem-readonly-mcp:
+    build: .
+    image: aem-readonly-mcp:1.0.0
+    container_name: aem-readonly-mcp
+    restart: unless-stopped
+    ports:
+      # Bind to loopback by default — this is a developer tool, not a public service.
+      # Change to "8080:8080" if you want it reachable from other hosts on the LAN.
+      - "127.0.0.1:8080:8080"
+    environment:
+      # Non-secret config. Override per host as needed.
+      AEM_BASE_URL: "https://author.internal.example.com:4502"
+    secrets:
+      - source: aem-mcp-secrets
+        # Mounted at /run/secrets/aem-mcp-secrets.properties inside the container.
+        # Spring Boot's spring.config.import in application.yml points here.
+        target: aem-mcp-secrets.properties
+        mode: 0400
+    read_only: true
+    tmpfs:
+      # The image's JAVA_TOOL_OPTIONS sets -Djava.io.tmpdir=/tmp; the read-only root
+      # filesystem above means we need a writable tmpfs here. 64 MiB is plenty for a
+      # JVM that doesn't write much to /tmp.
+      - /tmp:rw,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      # Lightweight TCP check — the runtime image doesn't ship curl/wget, and we don't
+      # want to bloat it for a healthcheck. Compose's TCP probe is enough to know the
+      # JVM is listening; Spring Boot's actuator probes are still reachable from the
+      # host for richer status.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo ok || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+secrets:
+  aem-mcp-secrets:
+    file: ./secrets/aem-mcp-secrets.properties
