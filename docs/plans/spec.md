@@ -143,6 +143,7 @@ Lives in `compose.yaml` `environment:` (or env at dev time):
 | `aem.max-limit`                | `100`                                        | Hard cap on QueryBuilder hits         |
 | `aem.max-depth`                | `3`                                          | Hard cap on `inspectNode` depth       |
 | `aem.bundle-health-enabled`    | `false`                                      | Set `true` only with console access   |
+| `aem.health.inspect-node-path` | (unset → first allow-listed prefix + `.0.json`) | Path probed by the `inspectNode` actuator probe (see §8) |
 
 ## 7. Deployment
 
@@ -192,9 +193,38 @@ multi-stage Dockerfile with a single-stage JRE-only one to avoid needing a Maven
   ```bash
   docker compose logs aem-readonly-mcp | grep aem.mcp.tool.invoked
   ```
-- **Health probes.** `/actuator/health/liveness` and `/actuator/health/readiness` return 200 on
-  a healthy instance. The Compose stack uses a TCP probe instead so the slim runtime image
-  doesn't need curl/wget; external HTTP probes still work.
+- **Health probes (lifecycle).** `/actuator/health/liveness` and `/actuator/health/readiness`
+  return 200 on a healthy instance. The Compose stack uses a TCP probe instead so the slim
+  runtime image doesn't need curl/wget; external HTTP probes still work.
+- **AEM connectivity probes (per-tool).** Four unauthenticated actuator endpoints exercise the
+  exact AEM endpoint and permission scope each MCP tool uses, so operators can pinpoint which
+  tool's dependency is broken without invoking the MCP transport:
+
+  | Endpoint                              | Probes                                                                                            | UNKNOWN when                       |
+  | ------------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------- |
+  | `/actuator/health/aem-search`         | `GET /bin/querybuilder.json?type=cq:Page&p.limit=0` — the `searchContent` tool's endpoint         | never                              |
+  | `/actuator/health/aem-inspect`        | `GET ${aem.health.inspect-node-path or first allowed prefix + .0.json}` — the `inspectNode` path  | never                              |
+  | `/actuator/health/aem-bundle`         | `GET /system/console/bundles.json` — the `bundleHealth` endpoint                                  | `aem.bundle-health-enabled=false`  |
+  | `/actuator/health/aem`                | Aggregate of the three above                                                                      | n/a (rolls up)                     |
+
+  Response is `200` when the probe is UP or UNKNOWN, `503` when DOWN. Details include
+  `httpStatus`, `latencyMs`, and a `category` from the shared error vocabulary:
+  `unauthorized`, `forbidden`, `not_found`, `aem_server_error`, `timeout`, `unreachable`,
+  `disabled_by_config`. Details deliberately exclude `baseUrl`, `username`, and any
+  secret-derived value to avoid topology leakage to unauthenticated callers. None of these
+  endpoints contribute to `/actuator/health/readiness` — a transient AEM blip does NOT
+  restart the container.
+
+- **Startup probe.** On `ApplicationReadyEvent` the server invokes each tool's health
+  indicator once and emits:
+  1. Three structured audit-log lines via `AuditLogger.record("aem_connectivity_probe", …)`
+     — one per tool — with `phase=startup`, `tool=<name>`, `status`, `latencyMs`, and the
+     diagnostic fields.
+  2. One human-readable INFO/WARN summary line of the form
+     `AEM connectivity check: searchContent=UP(200,47ms) inspectNode=UP(200,38ms) bundleHealth=UNKNOWN(disabled_by_config)`,
+     visible at the top of `docker compose logs`. If any tool is DOWN, the line is logged at
+     WARN level with the trailing text "server will continue serving" — startup never fails
+     on a DOWN probe.
 - **Application logging.** Spring Boot 3.4's built-in ECS JSON encoder formats all logs as
   single-line JSON on stdout; no `logback-spring.xml` needed. Collect via your host's container
   log driver.
