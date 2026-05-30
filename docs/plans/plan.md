@@ -128,7 +128,7 @@ aem-readonly-mcp/
 │   ├── .gitkeep
 │   └── aem-mcp-secrets.properties.example
 └── src/main/
-    ├── java/com/example/aem/mcp/
+    ├── java/com/adobe/mcp/
     │   ├── AemMcpApplication.java
     │   ├── aem/
     │   │   ├── AemProperties.java
@@ -165,7 +165,7 @@ aem-readonly-mcp/
         <relativePath/>
     </parent>
 
-    <groupId>com.example</groupId>
+    <groupId>com.adobe</groupId>
     <artifactId>aem-readonly-mcp</artifactId>
     <version>1.0.0</version>
     <name>aem-readonly-mcp</name>
@@ -228,12 +228,12 @@ aem-readonly-mcp/
 </project>
 ```
 
-### Task 2 — `src/main/java/com/example/aem/mcp/AemMcpApplication.java`
+### Task 2 — `src/main/java/com/adobe/mcp/AemMcpApplication.java`
 
 ```java
-package com.example.aem.mcp;
+package com.adobe.mcp;
 
-import com.example.aem.mcp.aem.AemProperties;
+import com.adobe.mcp.aem.AemProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -248,12 +248,12 @@ public class AemMcpApplication {
 }
 ```
 
-### Task 3 — `src/main/java/com/example/aem/mcp/aem/AemProperties.java`
+### Task 3 — `src/main/java/com/adobe/mcp/aem/AemProperties.java`
 
 Typed configuration + guardrails bound from `aem.*`. Credentials come from the environment.
 
 ```java
-package com.example.aem.mcp.aem;
+package com.adobe.mcp.aem;
 
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
@@ -333,14 +333,14 @@ public class AemProperties {
 }
 ```
 
-### Task 4 — `src/main/java/com/example/aem/mcp/config/AemClientConfig.java`
+### Task 4 — `src/main/java/com/adobe/mcp/config/AemClientConfig.java`
 
 `RestClient` bean with basic auth + conservative timeouts.
 
 ```java
-package com.example.aem.mcp.config;
+package com.adobe.mcp.config;
 
-import com.example.aem.mcp.aem.AemProperties;
+import com.adobe.mcp.aem.AemProperties;
 import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
 import org.springframework.boot.http.client.ClientHttpRequestFactorySettings;
 import org.springframework.context.annotation.Bean;
@@ -375,12 +375,12 @@ public class AemClientConfig {
 > target a different Boot version where these are relocated, adjust the imports accordingly but
 > keep the same behaviour (5s connect, 15s read, basic auth from properties).
 
-### Task 5 — `src/main/java/com/example/aem/mcp/aem/AemClient.java`
+### Task 5 — `src/main/java/com/adobe/mcp/aem/AemClient.java`
 
 Thin read-only HTTP adapter + path allow-listing.
 
 ```java
-package com.example.aem.mcp.aem;
+package com.adobe.mcp.aem;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.stereotype.Component;
@@ -492,10 +492,10 @@ public class AemClient {
 }
 ```
 
-### Task 6 — `src/main/java/com/example/aem/mcp/audit/AuditLogger.java`
+### Task 6 — `src/main/java/com/adobe/mcp/audit/AuditLogger.java`
 
 ```java
-package com.example.aem.mcp.audit;
+package com.adobe.mcp.audit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -543,17 +543,17 @@ public class AuditLogger {
 > built-in structured logging (`logging.structured.format.console=ecs`). No `logback-spring.xml`
 > is needed.
 
-### Task 7 — `src/main/java/com/example/aem/mcp/tools/AemReadOnlyTools.java`
+### Task 7 — `src/main/java/com/adobe/mcp/tools/AemReadOnlyTools.java`
 
 The three `@Tool` methods. The `@Tool` description text is what the model reads to decide when to
 call each tool — keep it accurate. All methods are read-only and audit every call.
 
 ```java
-package com.example.aem.mcp.tools;
+package com.adobe.mcp.tools;
 
-import com.example.aem.mcp.aem.AemClient;
-import com.example.aem.mcp.aem.AemProperties;
-import com.example.aem.mcp.audit.AuditLogger;
+import com.adobe.mcp.aem.AemClient;
+import com.adobe.mcp.aem.AemProperties;
+import com.adobe.mcp.audit.AuditLogger;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -754,12 +754,12 @@ public class AemReadOnlyTools {
 }
 ```
 
-### Task 8 — `src/main/java/com/example/aem/mcp/config/ToolsConfig.java`
+### Task 8 — `src/main/java/com/adobe/mcp/config/ToolsConfig.java`
 
 ```java
-package com.example.aem.mcp.config;
+package com.adobe.mcp.config;
 
-import com.example.aem.mcp.tools.AemReadOnlyTools;
+import com.adobe.mcp.tools.AemReadOnlyTools;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.context.annotation.Bean;
@@ -777,7 +777,7 @@ public class ToolsConfig {
 }
 ```
 
-### Task 8b — `src/main/java/com/example/aem/mcp/config/BearerTokenFilter.java`
+### Task 8b — `src/main/java/com/adobe/mcp/config/BearerTokenFilter.java`
 
 Transport-level auth: a single shared bearer token guards `/sse`. The token comes from the
 `aem-mcp.token` property (sourced from the mounted secrets file or the `AEM_MCP_TOKEN` env
@@ -786,7 +786,7 @@ probes (Compose's TCP healthcheck, or an external HTTP poller) are not blocked. 
 identity (OIDC or mTLS) is Phase 2 — see §4 "Future hardening".
 
 ```java
-package com.example.aem.mcp.config;
+package com.adobe.mcp.config;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;

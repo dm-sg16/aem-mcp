@@ -65,7 +65,7 @@ Safe-by-default. The server enforces seven constraints documented in
 │   └── aem-mcp-secrets.properties.example   # Copy and fill in, then chmod 600
 ├── .mcp.json.example              # Sample Claude Code registration (no secrets)
 └── src/main/
-    ├── java/com/example/aem/mcp/
+    ├── java/com/adobe/mcp/
     │   ├── AemMcpApplication.java
     │   ├── aem/
     │   │   ├── AemClient.java        # Path allow-list + segment-encoded GETs
@@ -203,7 +203,7 @@ mvn spring-boot:run # Hot-run from source (env vars still required)
 ```
 
 The unit tests in
-[`AemClientPathAllowListTest`](src/test/java/com/example/aem/mcp/aem/AemClientPathAllowListTest.java)
+[`AemClientPathAllowListTest`](src/test/java/com/adobe/mcp/aem/AemClientPathAllowListTest.java)
 cover the security-critical `assertPathAllowed` boundary cases. Keep
 them green when modifying `AemClient`.
 

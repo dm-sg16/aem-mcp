@@ -1,6 +1,6 @@
-package com.example.aem.mcp;
+package com.adobe.mcp;
 
-import com.example.aem.mcp.aem.AemProperties;
+import com.adobe.mcp.aem.AemProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;

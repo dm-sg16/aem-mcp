@@ -1,4 +1,4 @@
-package com.example.aem.mcp.aem;
+package com.adobe.mcp.aem;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;

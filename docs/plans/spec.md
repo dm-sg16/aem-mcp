@@ -227,6 +227,6 @@ The shipped state satisfies:
 ## 11. References
 
 - Build plan and task-by-task history: [`plan.md`](plan.md)
-- Source: `src/main/java/com/example/aem/mcp/`
+- Source: `src/main/java/com/adobe/mcp/`
 - Compose stack: [`/compose.yaml`](../../compose.yaml)
 - Secrets template: [`/secrets/aem-mcp-secrets.properties.example`](../../secrets/aem-mcp-secrets.properties.example)

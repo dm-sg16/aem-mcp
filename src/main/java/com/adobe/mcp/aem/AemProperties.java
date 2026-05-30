@@ -1,4 +1,4 @@
-package com.example.aem.mcp.aem;
+package com.adobe.mcp.aem;
 
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;

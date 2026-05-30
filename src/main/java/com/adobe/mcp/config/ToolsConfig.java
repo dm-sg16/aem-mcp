@@ -1,6 +1,6 @@
-package com.example.aem.mcp.config;
+package com.adobe.mcp.config;
 
-import com.example.aem.mcp.tools.AemReadOnlyTools;
+import com.adobe.mcp.tools.AemReadOnlyTools;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.context.annotation.Bean;
