@@ -1,9 +1,11 @@
 package com.adobe.mcp.aem;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Pattern;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -36,6 +38,9 @@ public class AemProperties {
 
     private boolean bundleHealthEnabled = false;
 
+    @Valid
+    private Health health = new Health();
+
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
 
@@ -60,6 +65,9 @@ public class AemProperties {
     public boolean isBundleHealthEnabled() { return bundleHealthEnabled; }
     public void setBundleHealthEnabled(boolean bundleHealthEnabled) { this.bundleHealthEnabled = bundleHealthEnabled; }
 
+    public Health getHealth() { return health; }
+    public void setHealth(Health health) { this.health = health; }
+
     @AssertTrue(message = "aem.default-limit must be <= aem.max-limit, and every aem.allowed-path-prefixes entry must start with '/'")
     public boolean isConsistent() {
         if (defaultLimit > maxLimit) {
@@ -74,5 +82,19 @@ public class AemProperties {
             }
         }
         return true;
+    }
+
+    /** Probe-path overrides for the per-tool actuator health indicators. */
+    public static class Health {
+        /**
+         * When null or empty, the inspectNode probe uses the first allowed prefix + ".0.json".
+         * Pattern accepts empty (= "use default") so {@code aem.health.inspect-node-path:} with no
+         * value in YAML is a valid no-op rather than a validation failure.
+         */
+        @Pattern(regexp = "^$|^/.*$", message = "must start with '/' (or be empty to use the default)")
+        private String inspectNodePath;
+
+        public String getInspectNodePath() { return inspectNodePath; }
+        public void setInspectNodePath(String inspectNodePath) { this.inspectNodePath = inspectNodePath; }
     }
 }

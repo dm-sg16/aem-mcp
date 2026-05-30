@@ -37,6 +37,11 @@ aem:
   max-limit: 100
   max-depth: 3
   bundle-health-enabled: false
+  health:
+    # Path probed by the inspectNode health indicator. Leave unset (or null) to use the first
+    # entry of allowed-path-prefixes + ".0.json" — usually fine. Override if your first
+    # allow-listed prefix doesn't actually exist in the target AEM yet.
+    inspect-node-path:
 
 # Shared bearer token guarding /sse. MUST resolve to a non-empty value via the secrets file
 # import above or the AEM_MCP_TOKEN env var; BearerTokenFilter refuses to start otherwise.
@@ -53,6 +58,29 @@ management:
       probes:
         enabled: true
       show-details: never
+      # Per-tool AEM connectivity probes plus an aggregate. Each tool gets its own group so it
+      # has a dedicated /actuator/health/<tool> URL (component-only paths 404 while the global
+      # show-details=never is in force). Details are safe to expose for these — no secrets, no
+      # base URL, no username — so we override show-details at the group level.
+      group:
+        aem:
+          include:
+            - searchContent
+            - inspectNode
+            - bundleHealth
+          show-details: always
+        aem-search:
+          include:
+            - searchContent
+          show-details: always
+        aem-inspect:
+          include:
+            - inspectNode
+          show-details: always
+        aem-bundle:
+          include:
+            - bundleHealth
+          show-details: always
 
 logging:
   structured:

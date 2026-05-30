@@ -1,5 +1,6 @@
 package com.adobe.mcp.config;
 
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -15,13 +16,22 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.EnumSet;
 import java.util.Set;
 
 @Configuration
 public class BearerTokenFilter {
 
     private static final Set<String> UNAUTHENTICATED_PATHS = Set.of(
-            "/", "/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness", "/actuator/info");
+            "/",
+            "/actuator/health",
+            "/actuator/health/liveness",
+            "/actuator/health/readiness",
+            "/actuator/health/aem",
+            "/actuator/health/aem-search",
+            "/actuator/health/aem-inspect",
+            "/actuator/health/aem-bundle",
+            "/actuator/info");
 
     @Bean
     public FilterRegistrationBean<OncePerRequestFilter> bearerTokenFilterRegistration(
@@ -59,6 +69,11 @@ public class BearerTokenFilter {
 
         FilterRegistrationBean<OncePerRequestFilter> reg = new FilterRegistrationBean<>(filter);
         reg.addUrlPatterns("/*");
+        // Only authenticate on the original request. Without this, Spring's internal /error
+        // forward (e.g. when an actuator group name is unknown) re-enters this filter, sees a
+        // path that's not in UNAUTHENTICATED_PATHS, and returns 401 even though the original
+        // path was allowed through.
+        reg.setDispatcherTypes(EnumSet.of(DispatcherType.REQUEST));
         reg.setOrder(Integer.MIN_VALUE);
         return reg;
     }

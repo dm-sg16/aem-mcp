@@ -140,6 +140,38 @@ read-only at `/run/secrets/aem-mcp-secrets.properties` and Spring Boot imports t
 
 To stop: `docker compose down`. To rebuild after a code change: `docker compose up -d --build`.
 
+### Verify AEM connectivity
+
+The server runs a per-tool AEM connectivity probe at startup (look for the `AEM connectivity
+check:` line in `docker compose logs`) and exposes the same probes on demand at four
+unauthenticated actuator endpoints:
+
+```bash
+# Aggregate — one call covers all three tools
+curl -sS http://localhost:8080/actuator/health/aem | jq
+
+# Per-tool — useful when you want to know which AEM endpoint is unhappy
+curl -sS http://localhost:8080/actuator/health/aem-search   | jq   # searchContent
+curl -sS http://localhost:8080/actuator/health/aem-inspect  | jq   # inspectNode
+curl -sS http://localhost:8080/actuator/health/aem-bundle   | jq   # bundleHealth
+```
+
+Status code is `200` when the probe is UP or UNKNOWN, `503` when DOWN. Map DOWN categories to
+root causes:
+
+| Category              | Likely cause                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| `unauthorized`        | AEM rejected the service-account credentials                                          |
+| `forbidden`           | Service account lacks read access to that AEM endpoint                                |
+| `not_found`           | The probed path doesn't exist in AEM (often: `aem.allowed-path-prefixes[0]` is wrong) |
+| `aem_server_error`    | AEM returned a 5xx — author instance unhealthy                                        |
+| `timeout`             | AEM didn't respond inside the configured read timeout                                 |
+| `unreachable`         | DNS / connect refused / TLS — wrong `AEM_BASE_URL` or network blocked                 |
+| `disabled_by_config`  | (`aem-bundle` only) `aem.bundle-health-enabled=false` — expected default              |
+
+These endpoints do not require the bearer token and do not contribute to
+`/actuator/health/readiness`, so AEM blips don't restart the container.
+
 ## Run locally without Docker (dev loop)
 
 ```bash

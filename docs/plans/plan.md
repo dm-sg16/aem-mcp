@@ -1065,6 +1065,143 @@ Also add an empty `secrets/.gitkeep` so the directory survives a fresh clone, an
 `secrets/*.properties` + `.env` to `.gitignore`, and `secrets/` + `compose.yaml` to
 `.dockerignore`.
 
+### Task 14 — Per-tool AEM connectivity probes (observability)
+
+Adds one Spring Boot health indicator per MCP tool, plus an aggregate group and a startup
+listener. Each indicator exercises the same AEM endpoint the corresponding tool would, so
+operators can pinpoint which tool's dependency is broken without invoking MCP.
+
+#### `src/main/java/com/adobe/mcp/health/AemErrorCategories.java`
+
+```java
+package com.adobe.mcp.health;
+
+/** Shared HTTP-status → structured-category vocabulary for tool errors and health probes. */
+public final class AemErrorCategories {
+    private AemErrorCategories() {}
+
+    public static String categoryForStatus(int httpStatus) {
+        return switch (httpStatus) {
+            case 401 -> "unauthorized";
+            case 403 -> "forbidden";
+            case 404 -> "not_found";
+            case 408, 504 -> "timeout";
+            case 500, 502, 503 -> "aem_server_error";
+            default -> "aem_http_error";
+        };
+    }
+
+    public static String hintForStatus(int httpStatus) {
+        return switch (httpStatus) {
+            case 401, 403 -> "AEM rejected the service-account credentials or the principal lacks read access to this path. Have the platform team grant read on the allow-listed trees.";
+            case 404 -> "Path not found in AEM. Confirm the node exists and is under an allow-listed prefix.";
+            case 408, 504 -> "AEM did not respond in time. Retry, or check author-instance load.";
+            case 500, 502, 503 -> "AEM returned a server error. Check the author instance and try again.";
+            default -> "AEM returned HTTP " + httpStatus + ".";
+        };
+    }
+}
+```
+
+Also update `AemReadOnlyTools.mapHttpError` to delegate to `AemErrorCategories.hintForStatus`,
+so tool-error hints and probe categories never drift.
+
+#### `src/main/java/com/adobe/mcp/health/AemToolHealthIndicator.java`
+
+Generic base used by all three per-tool beans. Returning `null` from the probe lambda is a
+sentinel for "tool disabled by configuration" → indicator reports `UNKNOWN` with
+`category=disabled_by_config` and makes no HTTP call. Maps `HttpStatusCodeException` via
+`AemErrorCategories.categoryForStatus`; maps `ResourceAccessException` causes
+(`SocketTimeoutException` → `timeout`, `UnknownHostException`/`ConnectException` →
+`unreachable`). Details emitted: `httpStatus`, `latencyMs`, `category`, `probePath`. Never
+emits `baseUrl`, `username`, or any secret value.
+
+#### `src/main/java/com/adobe/mcp/health/AemHealthIndicatorsConfig.java`
+
+Three `@Bean` declarations wiring `AemToolHealthIndicator` to tool-specific probe lambdas.
+Bean names are `searchContent`, `inspectNode`, `bundleHealth` — Spring uses these verbatim as
+the health-component keys.
+
+- `searchContent` → `GET /bin/querybuilder.json?type=cq:Page&p.limit=0`
+- `inspectNode` → `GET ${aem.health.inspect-node-path or aem.allowed-path-prefixes[0] + ".0.json"}`
+- `bundleHealth` → returns null sentinel when `aem.bundle-health-enabled=false`, otherwise
+  `GET /system/console/bundles.json`
+
+#### `src/main/java/com/adobe/mcp/health/AemStartupProbe.java`
+
+Implements `ApplicationListener<ApplicationReadyEvent>`. Injects
+`Map<String, HealthIndicator>` and `AuditLogger`. On the ready event: invokes each of the
+three indicators sequentially, emits one audit-log line per tool with
+`tool=aem_connectivity_probe phase=startup`, then a single INFO/WARN human-readable summary
+line. Never throws — startup proceeds regardless.
+
+#### `src/main/java/com/adobe/mcp/aem/AemProperties.java` — additions
+
+Add a nested `Health` properties class with a single `inspectNodePath` field
+(`@Pattern("^$|^/.*$")` — empty allowed, meaning "use default"). The consumer in
+`AemHealthIndicatorsConfig` treats blank as null and substitutes the first allowed prefix +
+`".0.json"`.
+
+#### `src/main/java/com/adobe/mcp/config/BearerTokenFilter.java` — additions
+
+Add four paths to `UNAUTHENTICATED_PATHS`:
+```
+/actuator/health/aem
+/actuator/health/aem-search
+/actuator/health/aem-inspect
+/actuator/health/aem-bundle
+```
+Also restrict the filter to `DispatcherType.REQUEST` only via
+`reg.setDispatcherTypes(EnumSet.of(DispatcherType.REQUEST))` so Spring's internal `/error`
+forward doesn't re-enter the filter and 401 a path that was allowed through on first pass.
+
+#### `src/main/resources/application.yml` — additions
+
+```yaml
+aem:
+  # ... existing keys ...
+  health:
+    # Defaults to first entry of allowed-path-prefixes + ".0.json" when unset.
+    inspect-node-path:
+
+management:
+  endpoint:
+    health:
+      # ... existing show-details, probes ...
+      # Per-tool AEM connectivity probes plus an aggregate. Each tool gets its own group so it
+      # has a dedicated /actuator/health/<group> URL (component-only paths 404 while the global
+      # show-details=never is in force).
+      group:
+        aem:
+          include:
+            - searchContent
+            - inspectNode
+            - bundleHealth
+          show-details: always
+        aem-search:
+          include:
+            - searchContent
+          show-details: always
+        aem-inspect:
+          include:
+            - inspectNode
+          show-details: always
+        aem-bundle:
+          include:
+            - bundleHealth
+          show-details: always
+```
+
+Group names use the `aem-*` prefix to avoid collision with the indicator bean names
+(`searchContent`/`inspectNode`/`bundleHealth`). Each per-tool group has `show-details: always`
+because the details (status, latency, category) contain no secrets and no topology hints.
+
+#### Tests — `src/test/java/com/adobe/mcp/health/AemToolHealthIndicatorTest.java`
+
+JUnit 5 + Spring `MockRestServiceServer`. ~10 cases covering 200/401/403/404/502,
+`ConnectException`, `UnknownHostException`, `SocketTimeoutException`, the null-sentinel
+disabled path, and a `doesNotContain("baseUrl","username")` assertion on the details map.
+
 -----
 
 ## 8. Build & Run — Phase 0 (local proof-of-concept)
@@ -1117,6 +1254,14 @@ Server starts on port 8080; SSE endpoint is `/sse`. Actuator probes (`/actuator/
    `/run/secrets/aem-mcp-secrets.properties` and Spring Boot picks up `aem.username`,
    `aem.password`, and `aem-mcp.token` from it. `docker inspect aem-readonly-mcp` shows no
    secret values in `.Config.Env` (only the non-secret `AEM_BASE_URL`).
+1. On startup the server emits one WARN/INFO line of the form
+   `AEM connectivity check: searchContent=...(...) inspectNode=...(...) bundleHealth=...(...)`,
+   plus three audit-log lines `tool=aem_connectivity_probe phase=startup` (one per MCP tool).
+   The four endpoints `/actuator/health/aem`, `/actuator/health/aem-search`,
+   `/actuator/health/aem-inspect`, `/actuator/health/aem-bundle` respond without bearer auth.
+   With AEM unreachable they return 503; with `aem.bundle-health-enabled=false` the bundle
+   group reports `UNKNOWN` with `category=disabled_by_config` and makes no outbound call.
+   None of the per-tool probes contribute to `/actuator/health/readiness`, which stays 200.
 
 ## 10. Containerize & Deploy with Docker Compose
 
