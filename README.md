@@ -35,14 +35,20 @@ Safe-by-default. The server enforces seven constraints documented in
   smuggling like `.infinity.json`).
 - **Result and depth caps.** QueryBuilder hits and node-inspection depth
   are clamped server-side.
-- **Bearer-token auth on `/sse`.** Shared secret from `AEM_MCP_TOKEN`;
-  the server refuses to start if it is unset. Actuator probes are
-  exempt. OIDC / mTLS are tracked as Phase 2.
+- **Bearer-token auth on `/sse`.** Shared secret sourced from
+  `secrets/aem-mcp-secrets.properties` (Compose) or the `AEM_MCP_TOKEN`
+  env var (dev); the server refuses to start if it is unset. Actuator
+  probes are exempt. OIDC / mTLS are tracked as Phase 2.
 - **Structured audit log.** ECS-encoded JSON, one event per tool call,
   with `tool`, `caller`, and `param.*` fields suitable for SIEM
   shipment.
-- **Read-only container.** Non-root, `readOnlyRootFilesystem: true`,
-  `emptyDir` mounted at `/tmp`.
+- **Per-tool AEM connectivity probes.** Startup probe plus four
+  unauthenticated actuator endpoints (`/actuator/health/aem` aggregate
+  and `/actuator/health/aem-{search,inspect,bundle}`) verify the
+  MCP↔AEM link without contributing to readiness — AEM blips don't
+  restart the container.
+- **Read-only container.** Non-root, `read_only: true`, with a writable
+  `tmpfs` mounted at `/tmp`.
 
 ## Prerequisites
 
