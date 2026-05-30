@@ -1,4 +1,4 @@
-package com.example.aem.mcp.audit;
+package com.adobe.mcp.audit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

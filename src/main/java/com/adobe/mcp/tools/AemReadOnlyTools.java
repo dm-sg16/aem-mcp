@@ -1,8 +1,8 @@
-package com.example.aem.mcp.tools;
+package com.adobe.mcp.tools;
 
-import com.example.aem.mcp.aem.AemClient;
-import com.example.aem.mcp.aem.AemProperties;
-import com.example.aem.mcp.audit.AuditLogger;
+import com.adobe.mcp.aem.AemClient;
+import com.adobe.mcp.aem.AemProperties;
+import com.adobe.mcp.audit.AuditLogger;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;

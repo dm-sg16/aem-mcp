@@ -1,6 +1,6 @@
-package com.example.aem.mcp.config;
+package com.adobe.mcp.config;
 
-import com.example.aem.mcp.aem.AemProperties;
+import com.adobe.mcp.aem.AemProperties;
 import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
 import org.springframework.boot.http.client.ClientHttpRequestFactorySettings;
 import org.springframework.context.annotation.Bean;

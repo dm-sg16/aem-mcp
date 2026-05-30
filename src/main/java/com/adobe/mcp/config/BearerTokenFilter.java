@@ -1,4 +1,4 @@
-package com.example.aem.mcp.config;
+package com.adobe.mcp.config;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;

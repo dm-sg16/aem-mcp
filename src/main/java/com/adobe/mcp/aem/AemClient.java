@@ -1,4 +1,4 @@
-package com.example.aem.mcp.aem;
+package com.adobe.mcp.aem;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.stereotype.Component;
