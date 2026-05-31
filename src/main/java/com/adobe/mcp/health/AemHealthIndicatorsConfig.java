@@ -12,22 +12,24 @@ public class AemHealthIndicatorsConfig {
 
     /** Probes /bin/querybuilder.json with a zero-result query — cheapest QueryBuilder call. */
     @Bean("searchContent")
-    public HealthIndicator searchContentHealth(RestClient aemRestClient) {
-        String probePath = "/bin/querybuilder.json?type=cq:Page&p.limit=0";
+    public HealthIndicator searchContentHealth(RestClient aemRestClient, AemProperties props) {
+        String probePath = props.getContextRoot() + "/bin/querybuilder.json?type=cq:Page&p.limit=0";
         return new AemToolHealthIndicator("searchContent", probePath,
                 () -> aemRestClient.get().uri(probePath).retrieve().toBodilessEntity());
     }
 
     /**
      * Probes a Sling node GET. Defaults to the first allow-listed prefix + ".0.json" when no
-     * explicit override is set, so the probe exercises a real configured tree.
+     * explicit override is set, so the probe exercises a real configured tree. The configured
+     * override is a JCR path (no context root); the context root is prepended automatically.
      */
     @Bean("inspectNode")
     public HealthIndicator inspectNodeHealth(RestClient aemRestClient, AemProperties props) {
         String configured = props.getHealth() == null ? null : props.getHealth().getInspectNodePath();
-        String probePath = (configured != null && !configured.isBlank())
+        String jcrPath = (configured != null && !configured.isBlank())
                 ? configured
                 : props.getAllowedPathPrefixes().get(0) + ".0.json";
+        String probePath = props.getContextRoot() + jcrPath;
         return new AemToolHealthIndicator("inspectNode", probePath,
                 () -> aemRestClient.get().uri(probePath).retrieve().toBodilessEntity());
     }
@@ -39,7 +41,7 @@ public class AemHealthIndicatorsConfig {
      */
     @Bean("bundleHealth")
     public HealthIndicator bundleHealthHealth(RestClient aemRestClient, AemProperties props) {
-        String probePath = "/system/console/bundles.json";
+        String probePath = props.getContextRoot() + "/system/console/bundles.json";
         return new AemToolHealthIndicator("bundleHealth", probePath, () -> {
             if (!props.isBundleHealthEnabled()) {
                 return null;

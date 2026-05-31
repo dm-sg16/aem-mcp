@@ -271,6 +271,13 @@ public class AemProperties {
     @NotBlank
     private String baseUrl;
 
+    /**
+     * Optional context root if AEM is deployed under a sub-path (e.g. "/WC2"). When set, the
+     * client and probes prepend it to every outbound HTTP URI. JCR paths (allow-list,
+     * inspectNode arg, inspect-node-path) stay context-root-independent. Empty by default.
+     */
+    private String contextRoot = "";
+
     @NotBlank
     private String username;
 
@@ -294,6 +301,9 @@ public class AemProperties {
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
 
+    public String getContextRoot() { return contextRoot; }
+    public void setContextRoot(String contextRoot) { this.contextRoot = contextRoot == null ? "" : contextRoot; }
+
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
 
@@ -315,7 +325,7 @@ public class AemProperties {
     public boolean isBundleHealthEnabled() { return bundleHealthEnabled; }
     public void setBundleHealthEnabled(boolean bundleHealthEnabled) { this.bundleHealthEnabled = bundleHealthEnabled; }
 
-    @AssertTrue(message = "aem.default-limit must be <= aem.max-limit, and every aem.allowed-path-prefixes entry must start with '/'")
+    @AssertTrue(message = "aem.default-limit must be <= aem.max-limit; every aem.allowed-path-prefixes entry must start with '/'; aem.context-root must be empty or start with '/' and not end with '/'")
     public boolean isConsistent() {
         if (defaultLimit > maxLimit) {
             return false;
@@ -325,6 +335,11 @@ public class AemProperties {
         }
         for (String prefix : allowedPathPrefixes) {
             if (prefix == null || !prefix.startsWith("/")) {
+                return false;
+            }
+        }
+        if (contextRoot != null && !contextRoot.isEmpty()) {
+            if (!contextRoot.startsWith("/") || contextRoot.endsWith("/") || contextRoot.contains("//")) {
                 return false;
             }
         }
@@ -402,7 +417,7 @@ public class AemClient {
     }
 
     public JsonNode queryBuilder(Map<String, String> predicates) {
-        UriComponentsBuilder uri = UriComponentsBuilder.fromPath("/bin/querybuilder.json");
+        UriComponentsBuilder uri = UriComponentsBuilder.fromPath(props.getContextRoot() + "/bin/querybuilder.json");
         predicates.forEach(uri::queryParam);
         return aem.get()
                 .uri(uri.build().toUriString())
@@ -415,7 +430,8 @@ public class AemClient {
         // Build the URI per segment so each segment is properly path-encoded, then append the
         // depth selector + .tidy.json extension. Segment validation in assertPathAllowed already
         // rejected '.' inside segments, which prevents callers from smuggling Sling selectors
-        // like ".infinity" past this point.
+        // like ".infinity" past this point. Context root is prepended for AEM installs mounted
+        // under a sub-path (e.g. "/WC2"); empty by default.
         String[] segments = Arrays.stream(path.split("/"))
                 .filter(s -> !s.isEmpty())
                 .toArray(String[]::new);
@@ -424,7 +440,7 @@ public class AemClient {
                 .build()
                 .encode()
                 .toUriString();
-        String uri = encodedPath + "." + depth + ".tidy.json";
+        String uri = props.getContextRoot() + encodedPath + "." + depth + ".tidy.json";
         return aem.get()
                 .uri(uri)
                 .retrieve()
@@ -433,7 +449,7 @@ public class AemClient {
 
     public JsonNode bundlesStatus() {
         return aem.get()
-                .uri("/system/console/bundles.json")
+                .uri(props.getContextRoot() + "/system/console/bundles.json")
                 .retrieve()
                 .body(JsonNode.class);
     }
@@ -906,6 +922,8 @@ spring:
 
 aem:
   base-url: ${AEM_BASE_URL:https://author.internal.example.com:4502}
+  # Optional. Sub-path AEM is deployed under, e.g. "/WC2" — leave empty for root-mounted AEM.
+  context-root: ${AEM_CONTEXT_ROOT:}
   username: ${AEM_USERNAME:}
   password: ${AEM_PASSWORD:}
   allowed-path-prefixes:
@@ -1130,10 +1148,13 @@ Three `@Bean` declarations wiring `AemToolHealthIndicator` to tool-specific prob
 Bean names are `searchContent`, `inspectNode`, `bundleHealth` — Spring uses these verbatim as
 the health-component keys.
 
-- `searchContent` → `GET /bin/querybuilder.json?type=cq:Page&p.limit=0`
-- `inspectNode` → `GET ${aem.health.inspect-node-path or aem.allowed-path-prefixes[0] + ".0.json"}`
+- `searchContent` → `GET ${aem.context-root}/bin/querybuilder.json?type=cq:Page&p.limit=0`
+- `inspectNode` → `GET ${aem.context-root}${aem.health.inspect-node-path or aem.allowed-path-prefixes[0] + ".0.json"}`
 - `bundleHealth` → returns null sentinel when `aem.bundle-health-enabled=false`, otherwise
-  `GET /system/console/bundles.json`
+  `GET ${aem.context-root}/system/console/bundles.json`
+
+`aem.context-root` is empty by default; when set (e.g. `/WC2`) it's prepended to every
+outbound probe URI to match the path AEM serves.
 
 #### `src/main/java/com/adobe/mcp/health/AemStartupProbe.java`
 

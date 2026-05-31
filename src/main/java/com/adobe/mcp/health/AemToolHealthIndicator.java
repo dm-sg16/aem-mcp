@@ -78,17 +78,13 @@ public class AemToolHealthIndicator extends AbstractHealthIndicator {
             }
         } catch (ResourceAccessException e) {
             Throwable cause = e.getCause();
-            String category;
-            if (cause instanceof SocketTimeoutException) {
-                category = "timeout";
-            } else if (cause instanceof UnknownHostException || cause instanceof ConnectException) {
-                category = "unreachable";
-            } else {
-                category = "unreachable";
-            }
+            String category = (cause instanceof SocketTimeoutException) ? "timeout" : "unreachable";
             builder.down()
                     .withDetail("category", category)
                     .withDetail("latencyMs", elapsedMs(startNanos));
+            if (probePath != null) {
+                builder.withDetail("probePath", probePath);
+            }
         }
     }
 

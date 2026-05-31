@@ -20,7 +20,7 @@ public class AemClient {
     }
 
     public JsonNode queryBuilder(Map<String, String> predicates) {
-        UriComponentsBuilder uri = UriComponentsBuilder.fromPath("/bin/querybuilder.json");
+        UriComponentsBuilder uri = UriComponentsBuilder.fromPath(props.getContextRoot() + "/bin/querybuilder.json");
         predicates.forEach(uri::queryParam);
         return aem.get()
                 .uri(uri.build().toUriString())
@@ -38,7 +38,7 @@ public class AemClient {
                 .build()
                 .encode()
                 .toUriString();
-        String uri = encodedPath + "." + depth + ".tidy.json";
+        String uri = props.getContextRoot() + encodedPath + "." + depth + ".tidy.json";
         return aem.get()
                 .uri(uri)
                 .retrieve()
@@ -47,7 +47,7 @@ public class AemClient {
 
     public JsonNode bundlesStatus() {
         return aem.get()
-                .uri("/system/console/bundles.json")
+                .uri(props.getContextRoot() + "/system/console/bundles.json")
                 .retrieve()
                 .body(JsonNode.class);
     }

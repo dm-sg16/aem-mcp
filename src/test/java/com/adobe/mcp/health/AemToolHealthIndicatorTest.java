@@ -115,6 +115,7 @@ class AemToolHealthIndicatorTest {
 
         assertThat(health.getStatus()).isEqualTo(Status.DOWN);
         assertThat(health.getDetails()).containsEntry("category", "unreachable");
+        assertThat(health.getDetails()).containsEntry("probePath", PROBE_PATH);
         assertThat(health.getDetails()).doesNotContainKey("httpStatus");
     }
 
