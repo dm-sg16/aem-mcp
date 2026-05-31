@@ -179,11 +179,17 @@ Same JAR, same listen port, same `/sse` and probe endpoints. Useful for fast ite
 
 ### 7.3 Air-gapped / restricted Docker environments
 
-The default Dockerfile pulls `maven:3.9.9-eclipse-temurin-17` and
-`eclipse-temurin:17.0.13_11-jre-jammy` from Docker Hub. On hosts where Docker Hub is blocked,
-substitute internal-registry equivalents (search for `maven`, `eclipse-temurin`, `temurin`,
-`adoptium`, or `openjdk`). Alternatively, pre-build the JAR with `mvn package` and replace the
-multi-stage Dockerfile with a single-stage JRE-only one to avoid needing a Maven image.
+The default Dockerfile pulls Red Hat UBI 9 OpenJDK images from
+`registry.access.redhat.com/ubi9/openjdk-17:1.20` (build) and
+`registry.access.redhat.com/ubi9/openjdk-17-runtime:1.20` (runtime). UBI is freely
+redistributable without a Red Hat subscription and is reachable from most corporate networks
+where Docker Hub egress is blocked. If your environment mirrors UBI to an internal registry,
+change the `FROM` lines in `Dockerfile` and `docs/plans/plan.md` Task 11 to your mirror's
+hostname and tag.
+
+If even `registry.access.redhat.com` is blocked, fall back to pre-building the JAR with
+`mvn package` and using a single-stage Dockerfile against whatever JRE 17 image your registry
+does carry — the runtime needs only `java -jar`, nothing else.
 
 ## 8. Observability
 
