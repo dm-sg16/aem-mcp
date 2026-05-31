@@ -48,10 +48,30 @@ aem:
     # allow-listed prefix doesn't actually exist in the target AEM yet.
     inspect-node-path:
 
-# Shared bearer token guarding /sse. MUST resolve to a non-empty value via the secrets file
-# import above or the AEM_MCP_TOKEN env var; BearerTokenFilter refuses to start otherwise.
+# Authentication for /sse. During the dual-auth migration window the server accepts EITHER:
+#   (a) a valid JWT issued by aem-mcp.oidc.issuer-uri (preferred — per-developer audit), OR
+#   (b) the legacy shared bearer token `aem-mcp.token` when aem-mcp.auth.legacy-bearer-enabled=true.
+# Once all clients have moved to JWTs (track via `caller=legacy:service-account` in the audit log),
+# flip legacy-bearer-enabled to false; the legacy code path is deleted in a follow-up release.
+# Cross-field validation in AemMcpAuthProperties requires:
+#   - aem-mcp.token non-blank when legacy-bearer-enabled=true
+#   - at least one of aem-mcp.oidc.issuer-uri or aem-mcp.oidc.jwk-set-uri set
 aem-mcp:
   token: ${AEM_MCP_TOKEN:}
+  auth:
+    legacy-bearer-enabled: ${AEM_MCP_LEGACY_BEARER_ENABLED:true}
+  oidc:
+    # OIDC discovery URL. Triggers a discovery call at first request.
+    issuer-uri: ${AEM_MCP_OIDC_ISSUER:}
+    # JWKS endpoint. Set this OR issuer-uri (jwk-set-uri wins if both are set). Prefer
+    # jwk-set-uri in dev/test or when the IDP discovery endpoint isn't reachable.
+    jwk-set-uri: ${AEM_MCP_OIDC_JWK_SET_URI:}
+    # Optional `aud` claim the JWT must carry. Empty = no audience constraint.
+    audience: ${AEM_MCP_OIDC_AUDIENCE:}
+    # JWT claim that populates the audit-log `caller` field. Falls back to `sub` when absent
+    # (logged once at WARN per process so the fallback is visible). Standard claim names:
+    # preferred_username (Okta/Entra/Auth0 default), email, sub.
+    principal-claim: preferred_username
 
 management:
   endpoints:
