@@ -18,6 +18,13 @@ public class AemProperties {
     @NotBlank
     private String baseUrl;
 
+    /**
+     * Optional context root if AEM is deployed under a sub-path (e.g. "/WC2"). When set, the
+     * client and probes prepend it to every outbound HTTP URI. JCR paths (allow-list,
+     * inspectNode arg, inspect-node-path) stay context-root-independent. Empty by default.
+     */
+    private String contextRoot = "";
+
     @NotBlank
     private String username;
 
@@ -44,6 +51,9 @@ public class AemProperties {
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
 
+    public String getContextRoot() { return contextRoot; }
+    public void setContextRoot(String contextRoot) { this.contextRoot = contextRoot == null ? "" : contextRoot; }
+
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
 
@@ -68,7 +78,7 @@ public class AemProperties {
     public Health getHealth() { return health; }
     public void setHealth(Health health) { this.health = health; }
 
-    @AssertTrue(message = "aem.default-limit must be <= aem.max-limit, and every aem.allowed-path-prefixes entry must start with '/'")
+    @AssertTrue(message = "aem.default-limit must be <= aem.max-limit; every aem.allowed-path-prefixes entry must start with '/'; aem.context-root must be empty or start with '/' and not end with '/'")
     public boolean isConsistent() {
         if (defaultLimit > maxLimit) {
             return false;
@@ -78,6 +88,11 @@ public class AemProperties {
         }
         for (String prefix : allowedPathPrefixes) {
             if (prefix == null || !prefix.startsWith("/")) {
+                return false;
+            }
+        }
+        if (contextRoot != null && !contextRoot.isEmpty()) {
+            if (!contextRoot.startsWith("/") || contextRoot.endsWith("/") || contextRoot.contains("//")) {
                 return false;
             }
         }

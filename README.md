@@ -103,6 +103,7 @@ The non-secret base URL is bound from an environment variable. The three secret 
 | Setting             | Compose source                                              | Env-var fallback   | Notes                                                                  |
 | ------------------- | ----------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------- |
 | `AEM_BASE_URL`      | `compose.yaml` `environment:` block (not secret)            | `AEM_BASE_URL`     | Base URL of the AEM author instance                                    |
+| `aem.context-root`  | `application.yml` or `compose.yaml` `environment:`          | `AEM_CONTEXT_ROOT` | Optional sub-path AEM is mounted at, e.g. `/WC2`. Empty by default.    |
 | `aem.username`      | `secrets/aem-mcp-secrets.properties` → `aem.username=...`   | `AEM_USERNAME`     | Read-only AEM service account                                          |
 | `aem.password`      | `secrets/aem-mcp-secrets.properties` → `aem.password=...`   | `AEM_PASSWORD`     | Service account password                                               |
 | `aem-mcp.token`     | `secrets/aem-mcp-secrets.properties` → `aem-mcp.token=...`  | `AEM_MCP_TOKEN`    | Shared bearer token guarding `/sse` (`openssl rand -hex 32`)           |

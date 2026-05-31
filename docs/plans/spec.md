@@ -130,9 +130,10 @@ The secrets file is gitignored; only the `.example` template is committed.
 
 Lives in `compose.yaml` `environment:` (or env at dev time):
 
-| Env var          | Default                                       | Purpose                       |
-| ---------------- | --------------------------------------------- | ----------------------------- |
-| `AEM_BASE_URL`   | `https://author.internal.example.com:4502`    | AEM author HTTP(S) endpoint   |
+| Env var             | Default                                       | Purpose                                                    |
+| ------------------- | --------------------------------------------- | ---------------------------------------------------------- |
+| `AEM_BASE_URL`      | `https://author.internal.example.com:4502`    | AEM author HTTP(S) endpoint                                |
+| `AEM_CONTEXT_ROOT`  | `""` (root-mounted AEM)                       | Optional sub-path, e.g. `/WC2`. Empty = root-mounted AEM.  |
 
 ### 6.3 Per-deployment knobs (`application.yml`)
 
@@ -144,6 +145,7 @@ Lives in `compose.yaml` `environment:` (or env at dev time):
 | `aem.max-depth`                | `3`                                          | Hard cap on `inspectNode` depth       |
 | `aem.bundle-health-enabled`    | `false`                                      | Set `true` only with console access   |
 | `aem.health.inspect-node-path` | (unset → first allow-listed prefix + `.0.json`) | Path probed by the `inspectNode` actuator probe (see §8) |
+| `aem.context-root`             | `""` (root-mounted AEM)                      | Optional sub-path, e.g. `/WC2`. Prepended to every outbound HTTP URI. JCR paths in allow-list and tool args are unaffected. |
 
 ## 7. Deployment
 

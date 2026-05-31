@@ -28,6 +28,11 @@ spring:
 
 aem:
   base-url: ${AEM_BASE_URL:https://author.internal.example.com:4502}
+  # Optional. Sub-path AEM is deployed under, e.g. "/WC2" — leave empty for root-mounted AEM.
+  # When set, it's prepended to every outbound HTTP URI (tools and connectivity probes). JCR
+  # paths in `allowed-path-prefixes` and tool arguments stay context-root-independent.
+  # Must start with '/' and not end with '/'.
+  context-root: ${AEM_CONTEXT_ROOT:}
   username: ${AEM_USERNAME:}
   password: ${AEM_PASSWORD:}
   allowed-path-prefixes:
