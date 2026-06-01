@@ -66,9 +66,8 @@ public class AemClient {
         for (int i = 0; i < segments.length; i++) {
             String segment = segments[i];
             if (i == 0) {
-                if (!segment.isEmpty()) {
-                    throw new IllegalArgumentException("Path must start with '/'.");
-                }
+                // segments[0] is always the empty leading segment here: the guard above rejects
+                // any path that doesn't start with '/', so split("/", -1)[0] is always "".
                 continue;
             }
             if (segment.isEmpty()) {

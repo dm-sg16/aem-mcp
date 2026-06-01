@@ -91,7 +91,8 @@ public class AemProperties {
                 return false;
             }
         }
-        if (contextRoot != null && !contextRoot.isEmpty()) {
+        // contextRoot is never null: the field defaults to "" and the setter normalises null to "".
+        if (!contextRoot.isEmpty()) {
             if (!contextRoot.startsWith("/") || contextRoot.endsWith("/") || contextRoot.contains("//")) {
                 return false;
             }
