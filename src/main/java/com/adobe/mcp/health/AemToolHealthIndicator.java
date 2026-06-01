@@ -1,5 +1,7 @@
 package com.adobe.mcp.health;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.actuate.health.AbstractHealthIndicator;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.Status;
@@ -26,6 +28,8 @@ import java.util.function.Supplier;
  * leak topology.
  */
 public class AemToolHealthIndicator extends AbstractHealthIndicator {
+
+    private static final Logger LOG = LoggerFactory.getLogger(AemToolHealthIndicator.class);
 
     private final String toolName;
     private final Supplier<ResponseEntity<Void>> probe;
@@ -85,6 +89,17 @@ public class AemToolHealthIndicator extends AbstractHealthIndicator {
             if (probePath != null) {
                 builder.withDetail("probePath", probePath);
             }
+            // The health details deliberately omit the base URL and the underlying exception to
+            // keep the unauthenticated /actuator/health/<tool> endpoint topology-safe. Logs are
+            // operator-only, so surface the real cause here — without it, "unreachable" can't be
+            // told apart from a DNS miss, a refused connection, or a TLS-trust failure
+            // (SSLHandshakeException: "PKIX path building failed ... unable to find valid
+            // certification path"). WARN because a connection that never established is
+            // actionable; the full stack (incl. nested cert-chain causes) follows at DEBUG.
+            Throwable reported = (cause != null) ? cause : e;
+            LOG.warn("AEM probe for tool '{}' is DOWN ({}): {}: {}",
+                    toolName, category, reported.getClass().getSimpleName(), reported.getMessage());
+            LOG.debug("AEM probe for tool '{}' connectivity failure detail", toolName, e);
         }
     }
 
