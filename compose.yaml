@@ -24,6 +24,24 @@ services:
     environment:
       # Non-secret config. Override per host as needed.
       AEM_BASE_URL: "https://author.internal.example.com:4502"
+      # --- Trusting an internal AEM TLS certificate -------------------------------------------
+      # If the AEM connectivity probe reports category "unreachable" and the logs show
+      #   SSLHandshakeException: PKIX path building failed ... unable to find valid
+      #   certification path to requested target
+      # the JVM doesn't trust AEM's certificate (self-signed or internal-CA-issued). Import the
+      # AEM author (or, preferably, your internal CA) cert into a truststore under ./certs and
+      # uncomment the volume below plus this JAVA_TOOL_OPTIONS override. See certs/README.md.
+      #
+      # NOTE: setting JAVA_TOOL_OPTIONS here REPLACES the image default, so the -Djava.io.tmpdir
+      # flag from the Dockerfile must be repeated or the read-only root filesystem breaks /tmp.
+      # JAVA_TOOL_OPTIONS: >-
+      #   -Djava.io.tmpdir=/tmp
+      #   -Djavax.net.ssl.trustStore=/deployments/aem-truststore.jks
+      #   -Djavax.net.ssl.trustStorePassword=changeit
+    # volumes:
+    #   # Read-only mount of the truststore built per certs/README.md. Fine alongside the
+    #   # read_only root filesystem below — it's an explicit read-only bind, not a write target.
+    #   - ./certs/aem-truststore.jks:/deployments/aem-truststore.jks:ro
     secrets:
       - source: aem-mcp-secrets
         # Mounted at /run/secrets/aem-mcp-secrets.properties inside the container.

@@ -5,6 +5,13 @@ target/
 secrets/*.properties
 .env
 
+# TLS truststores / certs — only certs/README.md and certs/.gitkeep are committed.
+certs/*.jks
+certs/*.p12
+certs/*.pem
+certs/*.crt
+certs/*.cer
+
 # Compiled class file
 *.class
 
