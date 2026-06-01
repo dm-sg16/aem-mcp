@@ -14,10 +14,37 @@ almost always because it is self-signed or issued by an internal CA that isn't
 in the JVM's default `cacerts`. The fix is to **trust the certificate**, never
 to disable verification.
 
-> Built files in this directory (`*.jks`, `*.p12`, `*.pem`, `*.crt`, `*.cer`)
-> are gitignored. Only this README and `.gitkeep` are committed.
+> The truststore file belongs here as **`certs/java.cacerts`** — that's the path
+> the pre-wired `compose.yaml` blocks expect. Truststores and certs in this
+> directory (`*.jks`, `*.p12`, `*.pem`, `*.crt`, `*.cer`, anything matching
+> `*cacerts*`) are gitignored; only this README and `.gitkeep` are committed.
 
-## 1. Obtain the certificate
+There are two ways to produce `certs/java.cacerts`. If your org already hands out
+a `cacerts` that trusts the internal CA, use Option A — it's a drop-in. Otherwise
+build one with Option B.
+
+## Option A — reuse an existing `cacerts`
+
+If you already have a `java.cacerts` (e.g. provided by your platform team, often
+the full public CA set **plus** your internal CA), just place it here:
+
+```bash
+cp /path/to/java.cacerts certs/java.cacerts
+```
+
+Verify it actually trusts the AEM/internal CA before relying on it:
+
+```bash
+keytool -list -keystore certs/java.cacerts -storepass changeit \
+  | grep -i -E 'your-ca|aem'
+```
+
+`changeit` is the stock password — use your org's if it was changed, and keep it
+in sync with `JAVA_TOOL_OPTIONS` in `compose.yaml`. A `cacerts` seeded from the
+full JDK set keeps public HTTPS working too, so the "replaces, not augments"
+caveat below doesn't bite.
+
+## Option B — build a truststore from the cert
 
 Prefer your **internal CA / root certificate** (from the platform team) over the
 AEM leaf cert — importing the CA survives certificate rotation, whereas the leaf
@@ -30,31 +57,28 @@ openssl s_client -connect author.internal.example.com:4502 -showcerts </dev/null
   | openssl x509 -outform PEM > certs/aem-author.pem
 ```
 
-## 2. Build the truststore
+Then import it into `certs/java.cacerts`:
 
 ```bash
 keytool -importcert -noprompt -alias aem-author \
   -file certs/aem-author.pem \
-  -keystore certs/aem-truststore.jks \
+  -keystore certs/java.cacerts \
   -storepass changeit
 ```
-
-`changeit` is only protecting a public certificate (no private key), so the
-password is not a secret — keep it in sync with the one in `compose.yaml`.
 
 > **Replaces, not augments.** `-Djavax.net.ssl.trustStore` makes the JVM use
 > *only* this truststore. That's fine when the server talks solely to internal
 > AEM. If it must also reach public HTTPS endpoints, seed the store from the
-> JDK's default `cacerts` first:
+> JDK's default `cacerts` first (this is effectively Option A):
 >
 > ```bash
-> cp "$JAVA_HOME/lib/security/cacerts" certs/aem-truststore.jks
-> keytool -storepasswd -keystore certs/aem-truststore.jks \
+> cp "$JAVA_HOME/lib/security/cacerts" certs/java.cacerts
+> keytool -storepasswd -keystore certs/java.cacerts \
 >   -storepass changeit -new changeit   # cacerts default pass is also 'changeit'
 > # then run the -importcert from above to add the AEM/CA cert
 > ```
 
-## 3. Wire it into Compose
+## Wire it into Compose
 
 Uncomment the `volumes:` mount and the `JAVA_TOOL_OPTIONS` override in
 `compose.yaml` (both are pre-written next to the `AEM_BASE_URL` entry), then:
