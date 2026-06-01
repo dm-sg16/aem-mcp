@@ -69,6 +69,8 @@ Safe-by-default. The server enforces seven constraints documented in
 ├── compose.yaml                   # Docker Compose stack (recommended deploy)
 ├── secrets/
 │   └── aem-mcp-secrets.properties.example   # Copy and fill in, then chmod 600
+├── certs/                         # Optional TLS truststore for internal AEM certs
+│   └── README.md                  # How to trust a self-signed / internal-CA AEM cert
 ├── .mcp.json.example              # Sample Claude Code registration (no secrets)
 └── src/main/
     ├── java/com/adobe/mcp/
@@ -178,6 +180,28 @@ root causes:
 
 These endpoints do not require the bearer token and do not contribute to
 `/actuator/health/readiness`, so AEM blips don't restart the container.
+
+When a probe is DOWN at the connection layer, the app log carries the underlying
+cause (the health detail omits it to keep the unauthenticated endpoint topology-safe):
+
+```
+WARN  ... AEM probe for tool 'searchContent' is DOWN (unreachable):
+      SSLHandshakeException: PKIX path building failed ... unable to find valid
+      certification path to requested target
+```
+
+### Trusting an internal AEM TLS certificate
+
+A `PKIX path building failed` handshake error means the JVM doesn't trust AEM's
+certificate — typical for an author instance with a self-signed or internal-CA cert.
+Fix it by importing the cert into a truststore (never by disabling verification):
+copy the AEM author or, preferably, your internal CA certificate into `certs/`, build a
+truststore, and uncomment the pre-written `volumes:` mount and `JAVA_TOOL_OPTIONS`
+override in `compose.yaml`. Step-by-step instructions are in
+[`certs/README.md`](certs/README.md).
+
+If the log shows `ConnectException` / `UnknownHostException` instead, it's host/port,
+DNS, or a blocked network path — not TLS — and the truststore won't help.
 
 ## Run locally without Docker (dev loop)
 

@@ -1,0 +1,5 @@
+# Custom startup-failure diagnostics. AemCredentialsFailureAnalyzer rewrites the generic
+# "must not be blank" binding error for aem.username / aem.password into an actionable message
+# (see the class javadoc); it defers to Spring Boot's built-in analyzers for everything else.
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+  com.adobe.mcp.config.AemCredentialsFailureAnalyzer

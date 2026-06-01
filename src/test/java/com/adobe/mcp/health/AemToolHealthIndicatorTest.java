@@ -1,6 +1,11 @@
 package com.adobe.mcp.health;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.Status;
 import org.springframework.http.HttpStatus;
@@ -12,6 +17,7 @@ import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
+import javax.net.ssl.SSLHandshakeException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
@@ -141,6 +147,38 @@ class AemToolHealthIndicatorTest {
 
         assertThat(health.getStatus()).isEqualTo(Status.DOWN);
         assertThat(health.getDetails()).containsEntry("category", "timeout");
+    }
+
+    @Test
+    void logs_underlying_cause_so_ssl_handshake_failures_are_diagnosable() {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(AemToolHealthIndicator.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.setContext((LoggerContext) LoggerFactory.getILoggerFactory());
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            Supplier<ResponseEntity<Void>> failing = () -> {
+                throw new ResourceAccessException("I/O error",
+                        new SSLHandshakeException("PKIX path building failed: unable to find valid "
+                                + "certification path to requested target"));
+            };
+
+            new AemToolHealthIndicator("searchContent", PROBE_PATH, failing).health();
+
+            assertThat(appender.list)
+                    .anySatisfy(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                        String msg = event.getFormattedMessage();
+                        assertThat(msg).contains("searchContent");
+                        assertThat(msg).contains("unreachable");
+                        assertThat(msg).contains("SSLHandshakeException");
+                        assertThat(msg).contains("PKIX path building failed");
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     @Test
