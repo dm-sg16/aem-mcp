@@ -260,15 +260,23 @@ Common codes:
 ## Development
 
 ```bash
-mvn test            # Run unit tests (path allow-list suite)
+mvn test            # Run unit tests + JaCoCo (build fails under 100% line coverage)
 mvn -DskipTests package
 mvn spring-boot:run # Hot-run from source (env vars still required)
 ```
 
-The unit tests in
-[`AemClientPathAllowListTest`](src/test/java/com/adobe/mcp/aem/AemClientPathAllowListTest.java)
-cover the security-critical `assertPathAllowed` boundary cases. Keep
-them green when modifying `AemClient`.
+The JUnit suite has 100% line coverage (enforced by the JaCoCo `check` goal),
+including the security-critical `assertPathAllowed` boundary cases in
+[`AemClientPathAllowListTest`](src/test/java/com/adobe/mcp/aem/AemClientPathAllowListTest.java).
+Keep it green when modifying the code.
+
+### End-to-end tests
+
+[`tests/e2e`](tests/e2e) holds a Playwright suite that drives the **running** server
+black-box — bearer auth, all actuator health probes, and the full MCP protocol over
+SSE (`initialize` / `tools/list` / `tools/call`) against a stubbed AEM. It uses
+Playwright's API-request client plus the MCP TypeScript SDK (no browser). See
+[`tests/e2e/README.md`](tests/e2e/README.md) to run it.
 
 ## Stack
 
