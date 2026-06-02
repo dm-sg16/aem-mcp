@@ -61,6 +61,17 @@ class AemClientHttpTest {
     }
 
     @Test
+    void getNode_singleEncodesSpecialCharactersInSegments() {
+        Fixture f = fixture("");
+        // A space must be encoded exactly once (%20), not double-encoded (%2520).
+        f.server().expect(requestTo("http://aem.test/content/public/a%20b.0.tidy.json"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+        assertThat(f.client().getNode("/content/public/a b", 0)).isNotNull();
+        f.server().verify();
+    }
+
+    @Test
     void getNode_withEmptyContextRoot() {
         Fixture f = fixture("");
         f.server().expect(requestTo("http://aem.test/content/public/home.0.tidy.json"))
