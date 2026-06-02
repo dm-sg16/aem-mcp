@@ -33,14 +33,18 @@ public class AemClient {
         String[] segments = Arrays.stream(path.split("/"))
                 .filter(s -> !s.isEmpty())
                 .toArray(String[]::new);
-        String encodedPath = UriComponentsBuilder.fromPath("/")
-                .pathSegment(segments)
-                .build()
-                .encode()
-                .toUriString();
-        String uri = props.getContextRoot() + encodedPath + "." + depth + ".tidy.json";
+        // Append the Sling selector/extension to the final segment, then let the RestClient's
+        // UriBuilder percent-encode each segment exactly once. Pre-encoding into a String and
+        // passing it to uri(String) double-encodes, because uri(String) treats its argument as a
+        // URI template and encodes it again (a space becomes %2520 instead of %20). Riding the
+        // suffix on the last segment (rather than a separate path() call) keeps its dots literal
+        // and avoids a stray '/' between the node and its ".<depth>.tidy.json" selector.
+        segments[segments.length - 1] = segments[segments.length - 1] + "." + depth + ".tidy.json";
         return aem.get()
-                .uri(uri)
+                .uri(uriBuilder -> uriBuilder
+                        .path(props.getContextRoot())
+                        .pathSegment(segments)
+                        .build())
                 .retrieve()
                 .body(JsonNode.class);
     }
@@ -66,9 +70,8 @@ public class AemClient {
         for (int i = 0; i < segments.length; i++) {
             String segment = segments[i];
             if (i == 0) {
-                if (!segment.isEmpty()) {
-                    throw new IllegalArgumentException("Path must start with '/'.");
-                }
+                // segments[0] is always the empty leading segment here: the guard above rejects
+                // any path that doesn't start with '/', so split("/", -1)[0] is always "".
                 continue;
             }
             if (segment.isEmpty()) {

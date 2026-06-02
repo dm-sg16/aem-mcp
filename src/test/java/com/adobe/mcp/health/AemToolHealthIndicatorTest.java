@@ -182,6 +182,51 @@ class AemToolHealthIndicatorTest {
     }
 
     @Test
+    void getToolName_returnsConfiguredName() {
+        AemToolHealthIndicator indicator = new AemToolHealthIndicator("searchContent", PROBE_PATH, () -> null);
+        assertThat(indicator.getToolName()).isEqualTo("searchContent");
+    }
+
+    @Test
+    void omits_probePath_detail_when_null_on_success() {
+        Fixture f = buildClient();
+        f.server().expect(requestTo("http://aem.test" + PROBE_PATH))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+        Health health = new AemToolHealthIndicator("tool", null, probe(f.client())).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails()).doesNotContainKey("probePath");
+    }
+
+    @Test
+    void omits_probePath_detail_when_null_on_http_error() {
+        Fixture f = buildClient();
+        f.server().expect(requestTo("http://aem.test" + PROBE_PATH))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND));
+
+        Health health = new AemToolHealthIndicator("tool", null, probe(f.client())).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails()).doesNotContainKey("probePath");
+    }
+
+    @Test
+    void omits_probePath_and_handles_null_cause_on_resource_access_error() {
+        // ResourceAccessException with no cause -> exercises the (cause != null ? cause : e) branch
+        // and the probePath == null branch together.
+        Supplier<ResponseEntity<Void>> failing = () -> {
+            throw new ResourceAccessException("I/O error, no cause");
+        };
+
+        Health health = new AemToolHealthIndicator("tool", null, failing).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails()).containsEntry("category", "unreachable");
+        assertThat(health.getDetails()).doesNotContainKey("probePath");
+    }
+
+    @Test
     void reports_unknown_disabled_when_supplier_returns_null() {
         Supplier<ResponseEntity<Void>> disabled = () -> null;
 
