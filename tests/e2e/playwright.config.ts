@@ -7,6 +7,13 @@ const TOKEN = process.env.AEM_MCP_TOKEN ?? 'e2e-secret-token';
 const BASE_URL = `http://127.0.0.1:${APP_PORT}`;
 const JAR = process.env.APP_JAR ?? '../../target/aem-readonly-mcp-1.0.0.jar';
 
+// Default to NOT reusing whatever is already on these ports: a stale app (e.g. one started with
+// `mvn spring-boot:run`) points at the placeholder AEM, not the stub, so every tool/health call
+// returns "aem_unreachable" and the AEM-dependent specs fail confusingly. Starting fresh — and
+// failing loudly with "port in use" — is deterministic. Opt back in with E2E_REUSE_SERVERS=1 for
+// fast local iteration against servers you've already wired to the stub.
+const REUSE = process.env.E2E_REUSE_SERVERS === '1';
+
 export default defineConfig({
   testDir: './specs',
   fullyParallel: false,
@@ -24,7 +31,7 @@ export default defineConfig({
     {
       command: 'node aem-stub.mjs',
       port: Number(AEM_STUB_PORT),
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: REUSE,
       env: { AEM_STUB_PORT },
       stdout: 'ignore',
       stderr: 'pipe',
@@ -33,7 +40,7 @@ export default defineConfig({
       command: `java -jar ${JAR}`,
       // readiness does not depend on AEM, so it flips UP as soon as the context is ready.
       url: `${BASE_URL}/actuator/health/readiness`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: REUSE,
       timeout: 120_000,
       stdout: 'ignore',
       stderr: 'pipe',
