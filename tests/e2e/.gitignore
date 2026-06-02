@@ -1,0 +1,6 @@
+# Playwright / Node toolchain artifacts — never committed.
+node_modules/
+test-results/
+playwright-report/
+blob-report/
+.last-run.json
