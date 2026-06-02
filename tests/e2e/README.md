@@ -48,8 +48,20 @@ npm run test:report      # open the last HTML report
 | `AEM_STUB_PORT` | `14502` | Port the stub AEM listens on. |
 | `AEM_MCP_TOKEN` | `e2e-secret-token` | Bearer token shared by the app and the specs. |
 | `APP_JAR` | `../../target/aem-readonly-mcp-1.0.0.jar` | Path to the built jar. |
+| `E2E_REUSE_SERVERS` | _(unset)_ | Set to `1` to reuse servers already on the ports (fast local iteration). |
 
-Set `CI=1` to fail on `test.only`, enable one retry, and always launch fresh servers.
+By default the suite **starts its own stub and app and never reuses** whatever is already on
+those ports. This avoids a confusing failure mode: if a stale app (e.g. one left running from
+`mvn spring-boot:run`) is on the app port, it points at the placeholder AEM rather than the stub,
+so the AEM-dependent specs fail with `aem_unreachable`. If a port is already taken you'll get a
+clear "port in use" error instead. For fast iteration against servers you've already wired to the
+stub, set `E2E_REUSE_SERVERS=1`.
+
+Set `CI=1` to fail on `test.only` and enable one retry.
+
+> **Scope note:** "100%" here means the full externally observable surface — every HTTP
+> endpoint, every MCP tool, and every error envelope — is automated and green. JaCoCo
+> *line* coverage is enforced separately by the JUnit unit suite (`mvn test`).
 
 > **Scope note:** "100%" here means the full externally observable surface — every HTTP
 > endpoint, every MCP tool, and every error envelope — is automated and green. JaCoCo

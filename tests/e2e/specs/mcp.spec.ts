@@ -30,6 +30,18 @@ async function callToolObject(client: Client, name: string, args: Record<string,
   return typeof unwrapped === 'string' ? JSON.parse(unwrapped) : unwrapped;
 }
 
+// For tools that must return AEM data (not an error envelope). Surfaces the actual payload so a
+// misconfigured backend — e.g. the app not pointed at the stub, which yields aem_unreachable —
+// fails with a clear message instead of an opaque "expected true received undefined".
+async function expectData(client: Client, name: string, args: Record<string, unknown>): Promise<any> {
+  const json = await callToolObject(client, name, args);
+  expect(
+    json.error,
+    `expected AEM data from ${name} but got an error envelope: ${JSON.stringify(json)}`,
+  ).toBeUndefined();
+  return json;
+}
+
 test.describe('MCP protocol over SSE', () => {
   let client: Client;
   let transport: SSEClientTransport;
@@ -55,7 +67,7 @@ test.describe('MCP protocol over SSE', () => {
   });
 
   test('searchContent returns AEM hits', async () => {
-    const json = await callToolObject(client, 'searchContent', { path: '/content/yoursite', type: 'cq:Page' });
+    const json = await expectData(client, 'searchContent', { path: '/content/yoursite', type: 'cq:Page' });
     expect(json.success).toBe(true);
     expect(json.hits.length).toBeGreaterThan(0);
   });
@@ -71,7 +83,7 @@ test.describe('MCP protocol over SSE', () => {
   });
 
   test('inspectNode returns the node JSON', async () => {
-    const json = await callToolObject(client, 'inspectNode', { path: '/content/yoursite/en', depth: 1 });
+    const json = await expectData(client, 'inspectNode', { path: '/content/yoursite/en', depth: 1 });
     expect(json['jcr:primaryType']).toBe('cq:Page');
   });
 
@@ -87,7 +99,7 @@ test.describe('MCP protocol over SSE', () => {
   });
 
   test('bundleHealth returns the OSGi bundle status', async () => {
-    const json = await callToolObject(client, 'bundleHealth', {});
+    const json = await expectData(client, 'bundleHealth', {});
     expect(json.status).toContain('bundles');
   });
 });
