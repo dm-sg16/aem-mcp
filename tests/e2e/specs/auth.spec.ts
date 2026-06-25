@@ -1,26 +1,32 @@
 import { test, expect } from '@playwright/test';
 
-// The BearerTokenFilter guards everything except a small allow-list of actuator paths.
+// Spring Security (oauth2-resource-server) guards everything except a small allow-list of
+// actuator paths plus `/`, `/error`, and `/actuator/info`. The legacy shared bearer is still
+// accepted alongside JWTs while aem-mcp.auth.legacy-bearer-enabled=true (the migration window).
 test.describe('bearer-token authentication', () => {
   test('GET /sse without a token is rejected', async ({ request }) => {
     const res = await request.get('/sse');
     expect(res.status()).toBe(401);
-    const body = await res.json();
-    expect(body.error).toBe('unauthorized');
-    expect(body.hint).toContain('Missing bearer token');
-    expect(res.headers()['www-authenticate']).toBe('Bearer');
+    // Spring's BearerTokenAuthenticationEntryPoint emits `WWW-Authenticate: Bearer` with no
+    // `error="..."` qualifier when no token was presented at all.
+    expect(res.headers()['www-authenticate']).toMatch(/^Bearer\b/);
   });
 
   test('GET /sse with a non-bearer Authorization header is rejected', async ({ request }) => {
     const res = await request.get('/sse', { headers: { Authorization: 'Basic Zm9vOmJhcg==' } });
     expect(res.status()).toBe(401);
-    expect((await res.json()).hint).toContain('Missing bearer token');
+    expect(res.headers()['www-authenticate']).toMatch(/^Bearer\b/);
   });
 
-  test('GET /sse with the wrong token is rejected', async ({ request }) => {
-    const res = await request.get('/sse', { headers: { Authorization: 'Bearer not-the-real-token' } });
+  test('GET /sse with a malformed token is rejected with invalid_token', async ({ request }) => {
+    // A bearer string that doesn't match the legacy secret AND isn't a valid JWT.
+    // The legacy provider returns null (no match → falls through to JWT provider); the JWT
+    // provider's NimbusJwtDecoder throws BadJwtException → InvalidBearerTokenException → 401.
+    const res = await request.get('/sse', {
+      headers: { Authorization: 'Bearer not-a-real-token-or-a-valid-jwt' },
+    });
     expect(res.status()).toBe(401);
-    expect((await res.json()).hint).toContain('Invalid bearer token');
+    expect(res.headers()['www-authenticate']).toContain('error="invalid_token"');
   });
 
   test('the MCP message endpoint requires a token', async ({ request }) => {

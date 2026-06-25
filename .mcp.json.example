@@ -1,4 +1,5 @@
 {
+  "_comment": "AEM_MCP_TOKEN now holds an IDP-issued JWT (obtain via `okta login` / `gcloud auth print-identity-token` / equivalent). The legacy shared secret is still accepted while the server has aem-mcp.auth.legacy-bearer-enabled=true; that flag flips to false once all developers migrate. Known limitation: when the JWT expires the server 401s the next JSON-RPC POST and Claude Code must reconnect — pick a token TTL >= 24h. The audit-log caller field is populated from the JWT's preferred_username claim (fallback: sub).",
   "mcpServers": {
     "aem-readonly": {
       "type": "sse",

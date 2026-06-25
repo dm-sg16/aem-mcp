@@ -27,7 +27,7 @@ high-availability hosting is deliberately out of scope.
 **Out of scope (see §10):**
 
 - Any write/replicate/delete operation
-- Per-developer identity (OIDC, mTLS)
+- ~~Per-developer identity (OIDC, mTLS)~~ — shipped, see §5 below
 - Asset binary transfer
 - Multi-tenant or shared deployment
 
@@ -102,14 +102,49 @@ safe-but-special characters survive the round trip.
 - Transport: Server-Sent Events at `/sse` (the default Spring AI MCP server transport). The
   streamable-HTTP transport is available behind a one-line config change (see commented
   `protocol: STREAMABLE` block in `application.yml`).
-- Authentication: every request to `/sse` must carry `Authorization: Bearer <aem-mcp.token>`.
-  The token is a shared secret, sourced from either the mounted secrets file or the
-  `AEM_MCP_TOKEN` env var. `BearerTokenFilter` refuses to start the server if no token is
-  configured.
-- Unauthenticated paths: `/actuator/health/liveness`, `/actuator/health/readiness`, and `/`.
-  Everything else, including `/actuator/info`, requires the token.
-- Failure response: `401 Unauthorized` with `WWW-Authenticate: Bearer` and body
-  `{"error":"unauthorized", "hint": "Missing/invalid bearer token"}`.
+- Authentication: every request to `/sse` must carry an `Authorization: Bearer <token>` header.
+  The server runs Spring Security (`spring-boot-starter-oauth2-resource-server`) with a
+  custom `AuthenticationManager` that accepts EITHER of two credential types during the
+  migration window:
+  - **JWT (preferred)** — validated against `aem-mcp.oidc.issuer-uri` (or `jwk-set-uri`).
+    The `preferred_username` claim populates the audit log's `caller` field; falls back to
+    `sub` if absent (logged once at WARN per process). Per-developer attribution is restored.
+  - **Legacy shared bearer** — equal to `aem-mcp.token`, accepted only while
+    `aem-mcp.auth.legacy-bearer-enabled=true` (default during the migration window).
+    Authenticated calls log as `caller=legacy:service-account`.
+- Permitted (no auth required): `GET /`, `/error`, `/actuator/info`, and every path under
+  `/actuator/health/**` (liveness, readiness, the per-tool AEM probes, and the aggregate).
+  Every other path requires a valid bearer.
+- Failure response: `401 Unauthorized` with `WWW-Authenticate: Bearer error="invalid_token"`
+  (Spring's default resource-server entry point).
+
+### 5.1 Dual-auth migration window
+
+The shared bearer is still accepted today so existing Claude Code clients keep working.
+Track migration progress by counting `caller=legacy:service-account` lines in the audit log:
+
+```bash
+docker compose logs aem-readonly-mcp | grep '"caller":"legacy:service-account"' | wc -l
+```
+
+Once that count holds at zero through a representative usage window, flip
+`AEM_MCP_LEGACY_BEARER_ENABLED=false`. The legacy code path (the
+`LegacyTokenAuthenticationProvider`, the `aem-mcp.token` property, the `Auth` nested
+config) is then deleted in a follow-up PR.
+
+### 5.2 Known limitation — SSE + JWT expiry
+
+The MCP SSE stream is a long-lived GET that holds whatever auth context it had at connect
+time. Subsequent JSON-RPC POSTs carry their own `Authorization` header and are re-validated
+on each request — so an expired JWT 401s the next POST. Clients must reconnect. Mitigate
+by issuing JWTs with TTL ≥ 24 h. Documented in `.mcp.json.example`.
+
+### 5.3 Audit-log cardinality
+
+Pre-migration, the `caller` field had cardinality 1 (`service-account`). Post-migration it
+becomes per-developer. If the log aggregator indexes `caller`, cardinality grows in
+proportion to the developer pool — fine for SIEM, worth checking for hot-path log
+processors with limited index space.
 
 ## 6. Configuration surface
 
@@ -118,11 +153,11 @@ safe-but-special characters survive the round trip.
 Loaded by Spring Boot from `/run/secrets/aem-mcp-secrets.properties` (mounted by Compose) via
 `spring.config.import`. Both keys also accept env-var fallback for local `java -jar` dev:
 
-| Property         | Env-var fallback | Purpose                                |
-| ---------------- | ---------------- | -------------------------------------- |
-| `aem.username`   | `AEM_USERNAME`   | AEM service-account login              |
-| `aem.password`   | `AEM_PASSWORD`   | AEM service-account password           |
-| `aem-mcp.token`  | `AEM_MCP_TOKEN`  | Shared bearer token guarding `/sse`    |
+| Property         | Env-var fallback | Purpose                                                          |
+| ---------------- | ---------------- | ---------------------------------------------------------------- |
+| `aem.username`   | `AEM_USERNAME`   | AEM service-account login                                        |
+| `aem.password`   | `AEM_PASSWORD`   | AEM service-account password                                     |
+| `aem-mcp.token`  | `AEM_MCP_TOKEN`  | Legacy shared bearer (dual-auth window — see §5.1)               |
 
 The secrets file is gitignored; only the `.example` template is committed.
 
@@ -146,6 +181,11 @@ Lives in `compose.yaml` `environment:` (or env at dev time):
 | `aem.bundle-health-enabled`    | `false`                                      | Set `true` only with console access   |
 | `aem.health.inspect-node-path` | (unset → first allow-listed prefix + `.0.json`) | Path probed by the `inspectNode` actuator probe (see §8) |
 | `aem.context-root`             | `""` (root-mounted AEM)                      | Optional sub-path, e.g. `/WC2`. Prepended to every outbound HTTP URI. JCR paths in allow-list and tool args are unaffected. |
+| `aem-mcp.auth.legacy-bearer-enabled` | `true`                                 | Accept the legacy shared bearer alongside JWTs during the migration window (§5.1). Flip to `false` after migration. |
+| `aem-mcp.oidc.issuer-uri`      | (unset)                                      | OIDC discovery URL. Set this OR `jwk-set-uri`.                       |
+| `aem-mcp.oidc.jwk-set-uri`     | (unset)                                      | JWKS endpoint. Skips discovery; preferred when discovery is blocked. |
+| `aem-mcp.oidc.audience`        | (unset)                                      | Optional required `aud` claim.                                       |
+| `aem-mcp.oidc.principal-claim` | `preferred_username`                         | JWT claim that populates the audit-log `caller`. Falls back to `sub` when absent. |
 
 ## 7. Deployment
 
@@ -196,8 +236,11 @@ does carry — the runtime needs only `java -jar`, nothing else.
 ## 8. Observability
 
 - **Audit log.** One line per MCP tool call, emitted as ECS JSON on stdout with
-  `aem.mcp.tool.invoked` and a `tool=<name>` field. Includes `caller` (currently a synthetic
-  client id pending Phase 2 identity) and `param.*` fields. Grep with:
+  `aem.mcp.tool.invoked` and a `tool=<name>` field. `caller` is the JWT `preferred_username`
+  claim (per-developer); falls back to `sub` if the claim is absent or
+  `legacy:service-account` when the legacy shared bearer was used (§5.1). Background-thread
+  events (e.g. the startup AEM probe) log as `service-account`. Plus `param.*` fields.
+  Grep with:
   ```bash
   docker compose logs aem-readonly-mcp | grep aem.mcp.tool.invoked
   ```
@@ -253,8 +296,9 @@ The shipped state satisfies:
 
 ## 10. Future hardening (deliberate non-goals for Phase 1)
 
-- **Per-developer identity.** Replace the shared bearer token with OIDC (carrying user identity
-  in JWT claims) or mTLS. The audit log's `caller` field already anticipates this.
+- ~~**Per-developer identity.**~~ **Shipped.** OIDC JWT validation runs alongside the legacy
+  shared bearer in a dual-auth window; flip `aem-mcp.auth.legacy-bearer-enabled=false` once
+  migration completes and delete the legacy code path in a follow-up PR. See §5.
 - **Write operations.** Out of scope by design. If ever added, they would land behind a
   separate `aem-write-mcp` server with its own threat model and approval workflow.
 - **Multi-host / HA.** Re-introduce a Kubernetes manifest, External-Secrets-Operator-backed

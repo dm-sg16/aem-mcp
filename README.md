@@ -35,10 +35,16 @@ Safe-by-default. The server enforces seven constraints documented in
   smuggling like `.infinity.json`).
 - **Result and depth caps.** QueryBuilder hits and node-inspection depth
   are clamped server-side.
-- **Bearer-token auth on `/sse`.** Shared secret sourced from
-  `secrets/aem-mcp-secrets.properties` (Compose) or the `AEM_MCP_TOKEN`
-  env var (dev); the server refuses to start if it is unset. Actuator
-  probes are exempt. OIDC / mTLS are tracked as Phase 2.
+- **Bearer-token auth on `/sse`.** Spring Security
+  (`spring-boot-starter-oauth2-resource-server`) accepts EITHER an
+  IDP-issued JWT (validated against `aem-mcp.oidc.issuer-uri` /
+  `jwk-set-uri`) OR — while the dual-auth migration window is open —
+  the legacy shared secret `aem-mcp.token`. The JWT
+  `preferred_username` claim flows into the audit log's `caller` field
+  for per-developer attribution; legacy-bearer calls log as
+  `caller=legacy:service-account` so migration progress is grep-able.
+  Actuator probes (`/actuator/health/**`) are exempt. See the
+  [Authentication](#authentication) section below.
 - **Structured audit log.** ECS-encoded JSON, one event per tool call,
   with `tool`, `caller`, and `param.*` fields suitable for SIEM
   shipment.
@@ -79,10 +85,12 @@ Safe-by-default. The server enforces seven constraints documented in
     │   │   ├── AemClient.java        # Path allow-list + segment-encoded GETs
     │   │   └── AemProperties.java    # Bound from aem.* with @AssertTrue validation
     │   ├── audit/
-    │   │   └── AuditLogger.java      # MDC -> ECS JSON
+    │   │   └── AuditLogger.java      # MDC -> ECS JSON; resolves caller from SecurityContext
     │   ├── config/
-    │   │   ├── AemClientConfig.java  # RestClient bean (basic auth + timeouts)
-    │   │   ├── BearerTokenFilter.java
+    │   │   ├── AemClientConfig.java       # RestClient bean (basic auth + timeouts)
+    │   │   ├── AemMcpAuthProperties.java  # Bound from aem-mcp.* (legacy + OIDC)
+    │   │   ├── LegacyTokenAuthenticationProvider.java  # Legacy shared-bearer path
+    │   │   ├── SecurityConfig.java        # Spring Security: dual-auth resource-server chain
     │   │   └── ToolsConfig.java
     │   └── tools/
     │       └── AemReadOnlyTools.java # @Tool methods exposed to MCP clients
@@ -108,7 +116,7 @@ The non-secret base URL is bound from an environment variable. The three secret 
 | `aem.context-root`  | `application.yml` or `compose.yaml` `environment:`          | `AEM_CONTEXT_ROOT` | Optional sub-path AEM is mounted at, e.g. `/WC2`. Empty by default.    |
 | `aem.username`      | `secrets/aem-mcp-secrets.properties` → `aem.username=...`   | `AEM_USERNAME`     | Read-only AEM service account                                          |
 | `aem.password`      | `secrets/aem-mcp-secrets.properties` → `aem.password=...`   | `AEM_PASSWORD`     | Service account password                                               |
-| `aem-mcp.token`     | `secrets/aem-mcp-secrets.properties` → `aem-mcp.token=...`  | `AEM_MCP_TOKEN`    | Shared bearer token guarding `/sse` (`openssl rand -hex 32`)           |
+| `aem-mcp.token`     | `secrets/aem-mcp-secrets.properties` → `aem-mcp.token=...`  | `AEM_MCP_TOKEN`    | Legacy shared bearer (dual-auth window; see [Authentication](#authentication))            |
 
 `@NotBlank` validation fails fast at startup if any required value is missing from both
 sources.
@@ -122,6 +130,11 @@ Per-deployment knobs in `application.yml`:
 | `aem.max-limit`                | `100`                          | Hard cap on QueryBuilder hits                                         |
 | `aem.max-depth`                | `3`                            | Hard cap on `inspectNode` depth                                       |
 | `aem.bundle-health-enabled`    | `false`                        | Set `true` only if the service account has `/system/console` access  |
+| `aem-mcp.auth.legacy-bearer-enabled` | `true`                   | Accept the legacy shared bearer in addition to JWTs (dual-auth window) |
+| `aem-mcp.oidc.issuer-uri`      | (unset)                        | OIDC discovery URL. Set this OR `jwk-set-uri`.                       |
+| `aem-mcp.oidc.jwk-set-uri`     | (unset)                        | JWKS endpoint. Preferred when OIDC discovery is blocked.             |
+| `aem-mcp.oidc.audience`        | (unset)                        | Optional required `aud` claim                                        |
+| `aem-mcp.oidc.principal-claim` | `preferred_username`           | JWT claim used as the audit-log `caller`. Falls back to `sub`.       |
 
 ## Run with Docker Compose (recommended)
 
@@ -217,6 +230,40 @@ java -jar target/aem-readonly-mcp-1.0.0.jar
 
 Same listen port (`8080`), same endpoints. Useful for quick iteration; the Compose path is
 the recommended deploy.
+
+## Authentication
+
+The `/sse` endpoint accepts a JWT issued by your OIDC provider; during
+the migration window the legacy shared bearer (`aem-mcp.token`) is also
+accepted.
+
+**JWT (preferred).** Each developer obtains an IDP-issued JWT via their
+IDP CLI (`okta login`, `gcloud auth print-identity-token`, etc.) and
+exports it as `AEM_MCP_TOKEN`. The `.mcp.json` shape is unchanged from
+the legacy flow — Claude Code just expands `${AEM_MCP_TOKEN}` into the
+`Authorization` header. The JWT's `preferred_username` claim populates
+the audit-log `caller` field (falls back to `sub` if absent — logged at
+WARN once per process).
+
+**Legacy shared bearer.** While
+`aem-mcp.auth.legacy-bearer-enabled=true` (the default during
+migration), the server also accepts the literal value of
+`aem-mcp.token`. Calls authenticated this way log as
+`caller=legacy:service-account`. Once all developers have moved to
+JWTs, flip the flag to `false` (the property is bound from
+`AEM_MCP_LEGACY_BEARER_ENABLED`); a follow-up release deletes the
+legacy code path.
+
+```bash
+# Track migration progress by counting legacy-path audit events:
+docker compose logs aem-readonly-mcp | grep '"caller":"legacy:service-account"' | wc -l
+```
+
+**Known limitation — JWT expiry on long SSE streams.** The MCP SSE
+stream is a long-lived GET that holds whatever auth context it had when
+the connection opened. Subsequent JSON-RPC POSTs are re-validated and
+will 401 once the JWT's `exp` passes — at which point Claude Code must
+reconnect. Mitigate by issuing JWTs with TTL ≥ 24 h.
 
 ## Register with Claude Code
 

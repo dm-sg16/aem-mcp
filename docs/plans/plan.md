@@ -80,16 +80,21 @@ Data flow to be aware of for compliance: content returned by AEM travels through
 the MCP client’s model context. Confirm your organization permits internal content to reach the
 chosen LLM before production rollout.
 
-### Future hardening (Phase 2 — out of scope for this build)
+### Future hardening (Phase 2)
 
-The Phase 1 design is deliberately read-only and uses a shared bearer token. The following items
-are explicitly **not** in scope today; record them so the next iteration does not have to
-re-discover them:
-
-1. Replace the shared-secret bearer with OIDC or mTLS so the server can attribute each call to
-   the individual developer rather than the service account.
-1. Propagate that authenticated principal into `AuditLogger.record(...)` (the `caller` parameter)
-   so the audit trail is per-developer rather than per-service-account.
+1. ~~Replace the shared-secret bearer with OIDC or mTLS so the server can attribute each call to
+   the individual developer rather than the service account.~~ **Shipped (dual-auth window).**
+   `spring-boot-starter-oauth2-resource-server` validates JWTs from
+   `aem-mcp.oidc.issuer-uri`; the legacy shared bearer is still accepted until
+   `aem-mcp.auth.legacy-bearer-enabled` flips to `false`. See spec.md §5.
+1. ~~Propagate that authenticated principal into `AuditLogger.record(...)` (the `caller` parameter)
+   so the audit trail is per-developer rather than per-service-account.~~ **Shipped.**
+   `AuditLogger` reads `SecurityContextHolder` when callers pass `caller=null` — no call-site
+   changes needed. JWT path → `preferred_username` claim. Legacy path → `legacy:service-account`.
+   Background threads → `service-account` (unchanged).
+1. **Task 8b (remaining).** Once `caller=legacy:service-account` audit-log count holds at zero,
+   flip `AEM_MCP_LEGACY_BEARER_ENABLED=false` and delete `LegacyTokenAuthenticationProvider`,
+   the `aem-mcp.token` property, and the dual-auth branch in `SecurityConfig.dualAuthManager`.
 1. If write tools are ever added, introduce a separate `aem.writable-path-prefixes` allow-list
    (defaulting empty) and a distinct `@WriteTool` marker so the read-only and write surfaces
    cannot be confused at runtime.

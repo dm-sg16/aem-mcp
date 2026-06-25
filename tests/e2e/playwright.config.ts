@@ -50,6 +50,11 @@ export default defineConfig({
         AEM_USERNAME: 'svc-e2e',
         AEM_PASSWORD: 'e2e-password',
         AEM_MCP_TOKEN: TOKEN,
+        // OIDC config is required for AemMcpAuthProperties.isConsistent() to pass at boot,
+        // but NimbusJwtDecoder.withJwkSetUri builds lazily — no HTTP call here until an actual
+        // JWT is presented, and these e2e specs only exercise the legacy bearer path and
+        // malformed-token paths (which fail at JWT parse time, not at JWKS lookup).
+        AEM_MCP_OIDC_JWK_SET_URI: 'http://127.0.0.1:65535/jwks',
         // Enable the bundle tool/probe so the full surface is exercised end to end.
         AEM_BUNDLEHEALTHENABLED: 'true',
       },
