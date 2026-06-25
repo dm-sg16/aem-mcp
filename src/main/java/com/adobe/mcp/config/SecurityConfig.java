@@ -109,7 +109,14 @@ public class SecurityConfig {
      * of UUIDs with no signal that the claim is misconfigured.
      */
     private static Converter<Jwt, JwtAuthenticationToken> buildJwtAuthenticationConverter(AemMcpAuthProperties props) {
-        String claim = props.getOidc().getPrincipalClaim();
+        return jwtAuthenticationConverter(props.getOidc().getPrincipalClaim());
+    }
+
+    /**
+     * Package-private so unit tests can drive both the claim-present and claim-absent paths
+     * directly without spinning up a full Spring context.
+     */
+    static Converter<Jwt, JwtAuthenticationToken> jwtAuthenticationConverter(String claim) {
         AtomicBoolean missingClaimWarned = new AtomicBoolean(false);
         return jwt -> {
             String name = jwt.getClaimAsString(claim);
